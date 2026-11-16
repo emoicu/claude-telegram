@@ -2298,6 +2298,8 @@ if (routed) void (async () => {
   const commands = [
     { command: 'session', description: 'Show model, effort and context of the session' },
     ...(COMMAND_HELPER ? HELPER_COMMANDS : []),
+    // Answered by the router itself, not by this session.
+    { command: 'sessions', description: 'List all sessions and free memory' },
   ]
   if (TOPIC_CHAT) {
     void bot.api.setMyCommands(commands, { scope: { type: 'chat', chat_id: TOPIC_CHAT } }).catch(() => {})

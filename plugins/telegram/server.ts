@@ -801,6 +801,43 @@ const HELPER_COMMANDS = [
 ] as const
 const HELPER_ARG = /^[A-Za-z0-9._:-]{1,40}$/
 
+// Bare /model and /effort answer with inline buttons attached to the message
+// (plus Cancel) rather than a reply keyboard, which would sit in the input
+// area until a choice was made. Picking a button runs the helper with it.
+const PICKERS: Record<string, { prompt: string; options: string[]; perRow: number }> = {
+  model: { prompt: 'Choose a model (default = account default):', options: ['default', 'fable', 'opus', 'sonnet', 'haiku'], perRow: 3 },
+  effort: { prompt: 'Choose reasoning effort (higher is slower and uses more quota):', options: ['low', 'medium', 'high', 'xhigh', 'max', 'auto'], perRow: 3 },
+}
+
+function pickerKeyboard(command: string): InlineKeyboard {
+  const { options, perRow } = PICKERS[command]!
+  const kb = new InlineKeyboard()
+  options.forEach((o, i) => {
+    kb.text(o, `cmd:${command}:${o}`)
+    if ((i + 1) % perRow === 0) kb.row()
+  })
+  if (options.length % perRow !== 0) kb.row()
+  return kb.text('✖ Cancel', 'cmd:cancel')
+}
+
+function runHelper(command: string, arg: string, chatId: string): void {
+  const helperArgs = arg ? [command, arg] : [command]
+  const [file, argv] = COMMAND_HELPER === 'builtin'
+    ? [process.execPath, [BUILTIN_HELPER, ...helperArgs]]
+    : [COMMAND_HELPER!, helperArgs]
+  const env = {
+    ...process.env,
+    TELEGRAM_HELPER_CLAUDE_PID: String(channelMode.claudePid ?? ''),
+    TELEGRAM_HELPER_CHAT_ID: chatId,
+    TELEGRAM_STATE_DIR: STATE_DIR,
+  }
+  execFile(file, argv, { timeout: 30_000, env }, err => {
+    if (!err) return
+    process.stderr.write(`telegram channel: command helper failed for /${command}: ${err}\n`)
+    void bot.api.sendMessage(chatId, `/${command} failed: ${err.message.split('\n')[0]}`).catch(() => {})
+  })
+}
+
 if (COMMAND_HELPER && channelMode.poll) {
   for (const { command } of HELPER_COMMANDS) {
     bot.command(command, async ctx => {
@@ -816,30 +853,46 @@ if (COMMAND_HELPER && channelMode.poll) {
         return
       }
       const chatId = String(ctx.chat!.id)
-      const msgId = ctx.message?.message_id
       noteStatusChat(chatId)
-      const helperArgs = arg ? [command, arg] : [command]
-      const [file, argv] = COMMAND_HELPER === 'builtin'
-        ? [process.execPath, [BUILTIN_HELPER, ...helperArgs]]
-        : [COMMAND_HELPER, helperArgs]
-      const env = {
-        ...process.env,
-        TELEGRAM_HELPER_CLAUDE_PID: String(channelMode.claudePid ?? ''),
-        TELEGRAM_HELPER_CHAT_ID: chatId,
-        TELEGRAM_STATE_DIR: STATE_DIR,
+      if (!arg && PICKERS[command]) {
+        await ctx.reply(PICKERS[command]!.prompt, { reply_markup: pickerKeyboard(command) })
+        return
       }
-      execFile(file, argv, { timeout: 30_000, env }, err => {
-        if (!err) return
-        process.stderr.write(`telegram channel: command helper failed for /${command}: ${err}\n`)
-        void bot.api.sendMessage(chatId, `/${command} failed: ${err.message.split('\n')[0]}`).catch(() => {})
-      })
-      // Acknowledge receipt; the helper sends the actual result (or, for a
-      // bare /model or /effort, a picker keyboard) once the session is idle.
-      if (msgId != null && (arg || command === 'new' || command === 'usage')) {
+      runHelper(command, arg, chatId)
+      // Acknowledge receipt; the helper reports the result once the session is idle.
+      const msgId = ctx.message?.message_id
+      if (msgId != null) {
         void bot.api.setMessageReaction(chatId, msgId, [{ type: 'emoji', emoji: '👌' }]).catch(() => {})
       }
     })
   }
+
+  // Picker buttons: `cmd:<command>:<option>` or `cmd:cancel`. Only allowlisted
+  // senders; the chosen option must be one we offered.
+  bot.callbackQuery(/^cmd:/, async ctx => {
+    const data = ctx.callbackQuery.data
+    const access = loadAccess()
+    if (!access.allowFrom.includes(String(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: 'Not authorized.' }).catch(() => {})
+      return
+    }
+    const chatId = String(ctx.chat?.id ?? ctx.from.id)
+    if (data === 'cmd:cancel') {
+      await ctx.answerCallbackQuery({ text: 'Cancelled' }).catch(() => {})
+      await ctx.editMessageText('✖ Cancelled').catch(() => {})
+      return
+    }
+    const m = /^cmd:(model|effort):([A-Za-z0-9._:-]+)$/.exec(data)
+    if (!m || !PICKERS[m[1]!]!.options.includes(m[2]!)) {
+      await ctx.answerCallbackQuery().catch(() => {})
+      return
+    }
+    const [, command, option] = m
+    await ctx.answerCallbackQuery({ text: `/${command} ${option}` }).catch(() => {})
+    await ctx.editMessageText(`⏳ /${command} ${option} — applying when the session is idle…`).catch(() => {})
+    noteStatusChat(chatId)
+    runHelper(command!, option!, chatId)
+  })
 }
 
 // Inline-button handler for permission requests. Callback data is

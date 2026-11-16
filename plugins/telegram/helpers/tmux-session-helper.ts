@@ -62,14 +62,6 @@ async function tg(method: string, body: Record<string, unknown>): Promise<void> 
 const send = (text: string, reply_markup?: unknown) =>
   tg('sendMessage', reply_markup ? { text, reply_markup } : { text })
 
-function picker(options: string[], command: string, perRow: number, placeholder: string) {
-  const rows: { text: string }[][] = []
-  for (let i = 0; i < options.length; i += perRow) {
-    rows.push(options.slice(i, i + perRow).map(o => ({ text: `/${command} ${o}` })))
-  }
-  return { keyboard: rows, resize_keyboard: true, one_time_keyboard: true, input_field_placeholder: placeholder }
-}
-
 // ---- Claude session and tmux --------------------------------------------
 
 function session(): { status?: string; tmux?: string } | undefined {
@@ -298,13 +290,10 @@ async function main(): Promise<void> {
     process.exit(2)
   }
 
-  if (command === 'model' && !arg) {
-    await send('Choose a model (default = account default):', picker(MODELS, 'model', 2, 'Pick a model'))
-    return
-  }
-  if (command === 'effort' && !arg) {
-    await send('Choose reasoning effort (higher is slower and uses more quota):', picker(EFFORTS, 'effort', 3, 'Pick a level'))
-    return
+  if ((command === 'model' || command === 'effort') && !arg) {
+    // The plugin shows the picker itself; a bare call has nothing to apply.
+    console.error(`/${command} needs an argument`)
+    process.exit(2)
   }
 
   if (detached !== '--job') {

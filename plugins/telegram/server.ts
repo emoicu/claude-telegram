@@ -838,6 +838,103 @@ function runHelper(command: string, arg: string, chatId: string): void {
   })
 }
 
+// LOCAL PATCH: /session reports the owning Claude session's state straight
+// from local files, without a model turn: model, effort, context size,
+// message count, cost so far, working directory and plugin version.
+// Context size is the prompt size of the latest API call (input + cache
+// read + cache creation tokens). Set TELEGRAM_CONTEXT_WINDOW (tokens) to
+// also show it as a percentage.
+const CONTEXT_WINDOW = Number(process.env.TELEGRAM_CONTEXT_WINDOW) || 0
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
+  return String(n)
+}
+
+function fmtDuration(ms: number): string {
+  const m = Math.floor(ms / 60_000)
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`
+}
+
+function pluginVersion(): string {
+  try {
+    return JSON.parse(readFileSync(join(import.meta.dir, '.claude-plugin', 'plugin.json'), 'utf8')).version ?? '?'
+  } catch {
+    return '?'
+  }
+}
+
+function sessionReport(): string {
+  if (channelMode.claudePid == null) return 'Session info is unavailable: no Claude Code process found.'
+  let info: Record<string, any> = {}
+  try {
+    info = JSON.parse(readFileSync(join(CLAUDE_DIR, 'sessions', `${channelMode.claudePid}.json`), 'utf8'))
+  } catch {
+    return `Session info is unavailable: no session file for pid ${channelMode.claudePid}.`
+  }
+  let last: any, cost: any, mode: string | undefined, messages: number | undefined
+  const path = info.sessionId ? findTranscript(info.sessionId) : undefined
+  if (path) {
+    let text = ''
+    try {
+      text = readFileSync(path, 'utf8')
+    } catch {}
+    const lines = text.split('\n')
+    for (let i = lines.length - 1; i >= 0 && !(last && cost && mode && messages != null); i--) {
+      const line = lines[i]
+      if (!line) continue
+      // Cheap prefilter before parsing; transcripts can be several MB.
+      if (!/"type":"(assistant|cost-state|permission-mode|system)"/.test(line)) continue
+      let e: any
+      try {
+        e = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (!last && e.type === 'assistant' && e.message?.usage && !e.isSidechain) last = e
+      else if (!cost && e.type === 'cost-state') cost = e
+      else if (!mode && e.type === 'permission-mode') mode = e.permissionMode
+      else if (messages == null && e.type === 'system' && typeof e.messageCount === 'number') messages = e.messageCount
+    }
+  }
+
+  const out: string[] = ['🧠 Claude session']
+  out.push(`Name: ${info.name ?? '?'} · ${info.status ?? '?'}`)
+  out.push(`Session: ${String(info.sessionId ?? '?').slice(0, 8)}… · up ${info.startedAt ? fmtDuration(Date.now() - info.startedAt) : '?'}`)
+  out.push(`Directory: ${info.cwd ?? '?'}${last?.gitBranch && last.gitBranch !== 'HEAD' ? ` (${last.gitBranch})` : ''}`)
+  out.push('')
+  out.push(`Model: ${last?.message?.model ?? '?'}`)
+  out.push(`Effort: ${last?.effort ?? '?'}`)
+  if (mode) out.push(`Permission mode: ${mode}`)
+  out.push('')
+  const u = last?.message?.usage
+  if (u) {
+    const ctx = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
+    const pct = CONTEXT_WINDOW ? ` (${Math.round((ctx / CONTEXT_WINDOW) * 100)}% of ${fmtTokens(CONTEXT_WINDOW)})` : ''
+    out.push(`Context: ${fmtTokens(ctx)} tokens${pct}`)
+  } else {
+    out.push('Context: no API call yet')
+  }
+  if (messages != null) out.push(`Messages: ${messages}`)
+  if (cost?.totalCostUSD != null) out.push(`Cost so far (API-equivalent): $${Number(cost.totalCostUSD).toFixed(2)}`)
+  out.push('')
+  out.push(`Claude Code ${info.version ?? '?'} · plugin ${pluginVersion()}`)
+  return out.join('\n')
+}
+
+if (channelMode.poll) {
+  bot.command('session', async ctx => {
+    const gated = dmCommandGate(ctx)
+    if (!gated) return
+    if (!gated.access.allowFrom.includes(gated.senderId)) {
+      await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
+      return
+    }
+    await ctx.reply(sessionReport())
+  })
+}
+
 if (COMMAND_HELPER && channelMode.poll) {
   for (const { command } of HELPER_COMMANDS) {
     bot.command(command, async ctx => {
@@ -1446,6 +1543,7 @@ if (channelMode.poll) void (async () => {
               { command: 'start', description: 'Welcome and setup guide' },
               { command: 'help', description: 'What this bot can do' },
               { command: 'status', description: 'Check your pairing status' },
+              { command: 'session', description: 'Show model, effort and context of the session' },
               ...(COMMAND_HELPER ? HELPER_COMMANDS : []),
             ],
             { scope: { type: 'all_private_chats' } },

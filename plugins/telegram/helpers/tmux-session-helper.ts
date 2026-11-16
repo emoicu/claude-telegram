@@ -28,10 +28,11 @@ import { join } from 'path'
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels', 'telegram')
 const LOG = join(STATE_DIR, 'session-helper.log')
-const LOCK = join(STATE_DIR, 'session-helper.lock')
+const LOCK = join(STATE_DIR, `session-helper-${process.env.TELEGRAM_HELPER_CLAUDE_PID ?? 'x'}.lock`)
 const PID = process.env.TELEGRAM_HELPER_CLAUDE_PID ?? ''
 const CHAT = process.env.TELEGRAM_HELPER_CHAT_ID ?? ''
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? ''
+const THREAD = Number(process.env.TELEGRAM_TOPIC_THREAD) || undefined
 
 const MODELS = ['default', 'fable', 'opus', 'sonnet', 'haiku']
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
@@ -51,7 +52,12 @@ async function tg(method: string, body: Record<string, unknown>): Promise<void> 
     const res = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: CHAT, ...body }),
+      body: JSON.stringify({
+        chat_id: CHAT,
+        // Topic sessions report into their own topic.
+        ...(THREAD && CHAT === process.env.TELEGRAM_TOPIC_CHAT ? { message_thread_id: THREAD } : {}),
+        ...body,
+      }),
     })
     if (!res.ok) log(`${method} failed: HTTP ${res.status}`)
   } catch (err) {

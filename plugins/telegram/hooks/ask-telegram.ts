@@ -17,7 +17,7 @@
 import { mkdirSync, writeFileSync } from 'fs'
 import { randomBytes } from 'crypto'
 import { join } from 'path'
-import { STATE_DIR, botCall, isChannelSession, readHookInput, readToken, recipients } from './lib'
+import { STATE_DIR, botCall, isChannelSession, readHookInput, readToken, targets } from './lib'
 
 type Option = { label?: string; description?: string }
 type Question = { question?: string; header?: string; multiSelect?: boolean; options?: Option[] }
@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   if (!questions.length) return
   if (!isChannelSession()) return
   const token = readToken()
-  const chats = recipients()
+  const chats = targets()
   if (!token || !chats.length) return
 
   const id = randomBytes(4).toString('hex')
@@ -65,10 +65,10 @@ async function main(): Promise<void> {
     q.text = lines.join('\n')
     const rows = q.options.map((label, i) => [{ text: clip(`${i + 1}. ${label}`, 60), callback_data: `ask:${id}:${qi}:${i}` }])
     if (q.multiSelect) rows.push([{ text: '✅ Done', callback_data: `ask:${id}:${qi}:d` }])
-    for (const chat_id of chats) {
-      const res = await botCall(token, 'sendMessage', { chat_id, text: q.text, reply_markup: { inline_keyboard: rows } })
+    for (const t of chats) {
+      const res = await botCall(token, 'sendMessage', { ...t, text: q.text, reply_markup: { inline_keyboard: rows } })
       if (res?.ok) {
-        q.messages[chat_id] = res.result.message_id
+        q.messages[t.chat_id] = res.result.message_id
         sent++
       }
     }

@@ -16,7 +16,7 @@
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { STATE_DIR, isChannelSession, readHookInput, readToken, recipients } from './lib'
+import { SLOT, STATE_DIR, botCall, isChannelSession, readHookInput, readToken, targets } from './lib'
 
 const RELAY_GRACE_MS = 10_000 // a relay this recent means the chat already has buttons
 
@@ -75,12 +75,12 @@ async function main(): Promise<void> {
   // already has Allow/Deny buttons and this would only be noise.
   await new Promise(r => setTimeout(r, 2500))
   try {
-    const last = Number(readFileSync(join(STATE_DIR, 'last-permission-relay'), 'utf8'))
+    const last = Number(readFileSync(join(STATE_DIR, SLOT === 'main' ? 'last-permission-relay' : `last-permission-relay-${SLOT}`), 'utf8'))
     if (Date.now() - last < RELAY_GRACE_MS) return
   } catch {}
 
   const token = readToken()
-  const chats = recipients()
+  const chats = targets()
   if (!token || !chats.length) return
 
   const tool = lastToolCall(input.transcript_path)
@@ -90,15 +90,7 @@ async function main(): Promise<void> {
   lines.push('', 'This prompt can only be answered in the terminal. If nobody answers, Claude Code denies it after a timeout.')
   const text = lines.join('\n')
 
-  await Promise.all(
-    chats.map(chat_id =>
-      fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ chat_id, text }),
-      }).catch(() => undefined),
-    ),
-  )
+  await Promise.all(chats.map(t => botCall(token, 'sendMessage', { ...t, text })))
 }
 
 await main()

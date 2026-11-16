@@ -97,8 +97,23 @@ function detectChannelMode(): { poll: boolean; reason: string; claudePid?: numbe
   return { poll: true, reason: 'no Claude Code ancestor found, polling as upstream does' }
 }
 const channelMode = detectChannelMode()
+
+// LOCAL PATCH: router mode. With TELEGRAM_ROUTER_SOCKET set, router.ts is the
+// only process polling Telegram; it starts one Claude Code session per forum
+// topic (plus `main` for direct messages) and forwards each session the raw
+// updates for its topic over a unix socket. This server then feeds them to
+// grammy with bot.handleUpdate() instead of polling, so every handler below
+// works unchanged. Sending still goes straight to the Bot API.
+//   TELEGRAM_SLOT          name of this session's slot (default "main")
+//   TELEGRAM_TOPIC_CHAT    forum group this session is bound to
+//   TELEGRAM_TOPIC_THREAD  message_thread_id of its topic
+const ROUTER_SOCKET = process.env.TELEGRAM_ROUTER_SOCKET || undefined
+const SLOT = process.env.TELEGRAM_SLOT || 'main'
+const TOPIC_CHAT = process.env.TELEGRAM_TOPIC_CHAT || undefined
+const TOPIC_THREAD = Number(process.env.TELEGRAM_TOPIC_THREAD) || undefined
+const routed = channelMode.poll && !!ROUTER_SOCKET
 process.stderr.write(
-  `telegram channel: ${channelMode.poll ? 'polling enabled' : 'polling disabled'} (${channelMode.reason})\n`,
+  `telegram channel: ${routed ? `routed as slot ${SLOT}` : channelMode.poll ? 'polling enabled' : 'polling disabled'} (${channelMode.reason})\n`,
 )
 
 // Telegram allows exactly one getUpdates consumer per token. If a previous
@@ -106,7 +121,7 @@ process.stderr.write(
 // survive as an orphan and hold the slot forever, so every new session sees
 // 409 Conflict. Kill any stale holder before we start polling.
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-if (channelMode.poll) try {
+if (channelMode.poll && !routed) try {
   const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
   if (stale > 1 && stale !== process.pid) {
     process.kill(stale, 0)
@@ -121,7 +136,7 @@ if (channelMode.poll) try {
     }
   }
 } catch {}
-if (channelMode.poll) writeFileSync(PID_FILE, String(process.pid))
+if (channelMode.poll && !routed) writeFileSync(PID_FILE, String(process.pid))
 
 // Last-resort safety net — without these the process dies silently on any
 // unhandled promise rejection. With them it logs and keeps serving tools.
@@ -139,6 +154,19 @@ process.on('uncaughtException', err => {
 const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 const bot = new Bot(TOKEN)
+
+// LOCAL PATCH: a session bound to a forum topic posts everything it sends to
+// that group into its own topic, so tools, status messages and prompts need
+// no per-call thread handling.
+if (TOPIC_CHAT && TOPIC_THREAD) {
+  bot.api.config.use((prev, method, payload, signal) => {
+    const p = payload as Record<string, unknown> | undefined
+    if (p && String(p.chat_id) === TOPIC_CHAT && p.message_thread_id == null && /^(send|copy|forward)/.test(method)) {
+      p.message_thread_id = TOPIC_THREAD
+    }
+    return prev(method, payload, signal)
+  })
+}
 let botUsername = ''
 
 type PendingEntry = {
@@ -279,6 +307,20 @@ type GateResult =
   | { action: 'drop' }
   | { action: 'pair'; code: string; isResend: boolean }
 
+// LOCAL PATCH: remember groups that messaged us without being allowlisted, so
+// the operator can find the id to pass to `/telegram:access group add`.
+function noteUnlistedGroup(id: string, title?: string): void {
+  const file = join(STATE_DIR, 'unlisted-groups.json')
+  let seen: Record<string, { title?: string; lastSeen: string }> = {}
+  try {
+    seen = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {}
+  seen[id] = { title, lastSeen: new Date().toISOString() }
+  try {
+    writeFileSync(file, JSON.stringify(seen, null, 2) + '\n', { mode: 0o600 })
+  } catch {}
+}
+
 function gate(ctx: Context): GateResult {
   const access = loadAccess()
   const pruned = pruneExpired(access)
@@ -324,7 +366,10 @@ function gate(ctx: Context): GateResult {
   if (chatType === 'group' || chatType === 'supergroup') {
     const groupId = String(ctx.chat!.id)
     const policy = access.groups[groupId]
-    if (!policy) return { action: 'drop' }
+    if (!policy) {
+      noteUnlistedGroup(groupId, (ctx.chat as { title?: string }).title)
+      return { action: 'drop' }
+    }
     const groupAllowFrom = policy.allowFrom ?? []
     const requireMention = policy.requireMention ?? true
     if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
@@ -341,6 +386,15 @@ function gate(ctx: Context): GateResult {
 
 // Like gate() but for bot commands: no pairing side effects, just allow/drop.
 function dmCommandGate(ctx: Context): { access: Access; senderId: string } | null {
+  // LOCAL PATCH: a topic session also takes commands from its own topic.
+  if (ctx.chat?.type !== 'private' && TOPIC_CHAT && String(ctx.chat?.id) === TOPIC_CHAT && ctx.from) {
+    const access = loadAccess()
+    const policy = access.groups[TOPIC_CHAT]
+    if (!policy) return null
+    const senderId = String(ctx.from.id)
+    const allowed = policy.allowFrom?.length ? policy.allowFrom : access.allowFrom
+    return allowed.includes(senderId) ? { access, senderId } : null
+  }
   if (ctx.chat?.type !== 'private') return null
   if (!ctx.from) return null
   const senderId = String(ctx.from.id)
@@ -485,7 +539,7 @@ mcp.setNotificationHandler(
     pendingPermissions.set(request_id, { tool_name, description, input_preview })
     // Lets hooks/notify-telegram.ts skip prompts we already relayed with buttons.
     try {
-      writeFileSync(join(STATE_DIR, 'last-permission-relay'), String(Date.now()))
+      writeFileSync(join(STATE_DIR, SLOT === 'main' ? 'last-permission-relay' : `last-permission-relay-${SLOT}`), String(Date.now()))
     } catch {}
     const access = loadAccess()
     const text = `🔐 Permission: ${tool_name}`
@@ -493,7 +547,8 @@ mcp.setNotificationHandler(
       .text('See more', `perm:more:${request_id}`)
       .text('✅ Allow', `perm:allow:${request_id}`)
       .text('❌ Deny', `perm:deny:${request_id}`)
-    for (const chat_id of access.allowFrom) {
+    // LOCAL PATCH: a topic session asks in its own topic.
+    for (const chat_id of TOPIC_CHAT ? [TOPIC_CHAT] : access.allowFrom) {
       void bot.api.sendMessage(chat_id, text, { reply_markup: keyboard }).catch(e => {
         process.stderr.write(`permission_request send to ${chat_id} failed: ${e}\n`)
       })
@@ -1646,7 +1701,7 @@ bot.catch(err => {
 // returned, and polling stopped permanently while the process stayed alive
 // (MCP stdin keeps it running). Outbound tools kept working but the bot was
 // deaf to inbound messages until a full restart.
-if (channelMode.poll) void (async () => {
+if (channelMode.poll && !routed) void (async () => {
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.start({
@@ -1687,4 +1742,72 @@ if (channelMode.poll) void (async () => {
       await new Promise(r => setTimeout(r, delay))
     }
   }
+})()
+
+// LOCAL PATCH: router client (see ROUTER_SOCKET above). Lines are JSON:
+// we send {"hello": slot}, the router sends {"update": <Telegram Update>}.
+// Reconnects every 2s, so the router can restart without losing sessions.
+function connectRouter(): void {
+  let buf = ''
+  const retry = () => {
+    if (!shuttingDown) setTimeout(connectRouter, 2000)
+  }
+  Bun.connect({
+    unix: ROUTER_SOCKET!,
+    socket: {
+      open(sock) {
+        sock.write(JSON.stringify({ hello: SLOT, pid: process.pid }) + '\n')
+        process.stderr.write(`telegram channel: connected to router as ${SLOT}\n`)
+      },
+      data(_sock, chunk) {
+        buf += chunk.toString()
+        for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+          const line = buf.slice(0, i)
+          buf = buf.slice(i + 1)
+          if (!line) continue
+          try {
+            const msg = JSON.parse(line)
+            if (msg.update) {
+              void bot.handleUpdate(msg.update).catch(err => {
+                process.stderr.write(`telegram channel: routed update failed: ${err}\n`)
+              })
+            }
+          } catch {}
+        }
+      },
+      close: retry,
+      error() {},
+    },
+  }).catch(retry)
+}
+
+if (routed) void (async () => {
+  for (;;) {
+    try {
+      await bot.init()
+      break
+    } catch (err) {
+      process.stderr.write(`telegram channel: getMe failed (${err}), retrying in 5s\n`)
+      await new Promise(r => setTimeout(r, 5000))
+    }
+  }
+  botUsername = bot.botInfo.username
+  const commands = [
+    { command: 'session', description: 'Show model, effort and context of the session' },
+    ...(COMMAND_HELPER ? HELPER_COMMANDS : []),
+  ]
+  if (TOPIC_CHAT) {
+    void bot.api.setMyCommands(commands, { scope: { type: 'chat', chat_id: TOPIC_CHAT } }).catch(() => {})
+  } else {
+    void bot.api.setMyCommands(
+      [
+        { command: 'start', description: 'Welcome and setup guide' },
+        { command: 'help', description: 'What this bot can do' },
+        { command: 'status', description: 'Check your pairing status' },
+        ...commands,
+      ],
+      { scope: { type: 'all_private_chats' } },
+    ).catch(() => {})
+  }
+  connectRouter()
 })()

@@ -54,6 +54,20 @@ export function readToken(): string | undefined {
   return undefined
 }
 
+/** Slot of this session when started by router.ts ("main" otherwise). */
+export const SLOT = process.env.TELEGRAM_SLOT || 'main'
+
+/**
+ * Where hook messages go: the session's forum topic when router.ts bound it
+ * to one, otherwise every allowlisted DM (user ids double as chat ids).
+ */
+export function targets(): { chat_id: string; message_thread_id?: number }[] {
+  const chat = process.env.TELEGRAM_TOPIC_CHAT
+  const thread = Number(process.env.TELEGRAM_TOPIC_THREAD) || undefined
+  if (chat && thread) return [{ chat_id: chat, message_thread_id: thread }]
+  return recipients().map(chat_id => ({ chat_id }))
+}
+
 /** Allowlisted DM chats (user ids double as private chat ids). */
 export function recipients(): string[] {
   try {

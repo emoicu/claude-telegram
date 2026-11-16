@@ -642,6 +642,65 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 const RICH_LIMIT = 32768
 
+// LOCAL PATCH: reaction shortcuts. A reaction from the user on one of our
+// messages becomes a short instruction to Claude, quoting the start of that
+// message. Defaults below; <state>/reactions.json overrides them
+// ({"emoji": "meaning"}, null removes one). Reactions on messages we did not
+// send, or with emoji not in the map, are ignored.
+const DEFAULT_REACTIONS: Record<string, string> = {
+  '👍': 'Agreed, go ahead: continue with what this message proposes.',
+  '👌': 'Pick the option you recommended in this message and carry on.',
+  '👎': 'Not right: drop this approach and try a different one.',
+  '🤔': "I don't follow: explain this message again in simpler words.",
+  '👀': 'Tell me more: expand on this message with details and reasoning.',
+  '✍': "Write it down: turn this message's content into a document or save it to memory.",
+  '❤': 'Remember this: save the preference shown here to memory and follow it from now on.',
+  '🔥': 'Do it now: carry out what this message proposes without asking again.',
+  '🙏': 'Pause: stop the current work and wait for my next instruction.',
+  '🎉': 'Done: wrap up, commit the work and clean up temporary files.',
+}
+const PAUSE_REACTION = '🙏' // also interrupts a running turn
+const SENT_FILE = join(STATE_DIR, `sent-messages${SLOT === 'main' ? '' : `-${SLOT}`}.json`)
+const SENT_KEEP = 300
+
+function reactionMap(): Record<string, string> {
+  const map = { ...DEFAULT_REACTIONS }
+  try {
+    const custom = JSON.parse(readFileSync(join(STATE_DIR, 'reactions.json'), 'utf8')) as Record<string, string | null>
+    for (const [emoji, meaning] of Object.entries(custom)) {
+      if (meaning == null) delete map[emoji]
+      else map[emoji] = String(meaning)
+    }
+  } catch {}
+  return map
+}
+
+type SentRecord = { chat: string; id: number; text: string }
+let sentCache: SentRecord[] | undefined
+
+function loadSent(): SentRecord[] {
+  if (!sentCache) {
+    try {
+      sentCache = JSON.parse(readFileSync(SENT_FILE, 'utf8'))
+    } catch {
+      sentCache = []
+    }
+  }
+  return sentCache!
+}
+
+function rememberSent(chat: string, ids: number[], text: string): void {
+  const list = loadSent()
+  for (const id of ids) list.push({ chat, id, text: text.slice(0, 300) })
+  if (list.length > SENT_KEEP) list.splice(0, list.length - SENT_KEEP)
+  try {
+    writeFileSync(SENT_FILE, JSON.stringify(list), { mode: 0o600 })
+  } catch {}
+}
+
+const findSent = (chat: string, id: number) => loadSent().find(r => r.chat === chat && r.id === id)
+
+
 /** Send a Bot API 10.1 rich message written in GitHub-flavored Markdown. */
 async function sendRich(chat_id: string, markdown: string, replyTo?: number): Promise<{ message_id: number }> {
   return (bot.api.raw as any).sendRichMessage({
@@ -740,6 +799,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             ? `sent (id: ${sentIds[0]})`
             : `sent ${sentIds.length} parts (ids: ${sentIds.join(', ')})`
         noteStatusReply(chat_id)
+        if (sentIds.length) rememberSent(chat_id, sentIds, text)
         return { content: [{ type: 'text', text: result }] }
       }
       case 'react': {
@@ -1812,6 +1872,52 @@ if (STATUS_ENABLED) {
   }, STATUS_POLL_MS).unref()
 }
 
+// LOCAL PATCH: reaction shortcuts (see DEFAULT_REACTIONS).
+bot.on('message_reaction', async ctx => {
+  const r = ctx.messageReaction
+  const chat = String(r.chat.id)
+  const sender = r.user ? String(r.user.id) : undefined
+  if (!sender) return
+  const access = loadAccess()
+  const allowed = r.chat.type === 'private'
+    ? access.allowFrom.includes(sender)
+    : TOPIC_CHAT === chat && (access.groups[chat]?.allowFrom?.length ? access.groups[chat]!.allowFrom! : access.allowFrom).includes(sender)
+  if (!allowed) return
+  const sent = findSent(chat, r.message_id)
+  if (!sent) return // not ours (or not this session's)
+  const before = new Set(r.old_reaction.filter(x => x.type === 'emoji').map(x => (x as { emoji: string }).emoji))
+  const added = r.new_reaction
+    .filter(x => x.type === 'emoji')
+    .map(x => (x as { emoji: string }).emoji)
+    .filter(e => !before.has(e))
+  const map = reactionMap()
+  const known = added.filter(e => map[e.replace(/\uFE0F/g, '')] ?? map[e])
+  if (!known.length) return
+  const emoji = known[0]!
+  const meaning = map[emoji.replace(/\uFE0F/g, '')] ?? map[emoji]!
+  if (emoji.replace(/\uFE0F/g, '') === PAUSE_REACTION) interruptClaude()
+  const quote = sent.text.replace(/\s+/g, ' ').trim()
+  noteStatusChat(chat)
+  void mcp.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      content:
+        `[Reaction ${emoji} on your message ${r.message_id}] ${meaning}\n` +
+        `Your message began: "${quote.length > 200 ? quote.slice(0, 199) + '…' : quote}"`,
+      meta: {
+        chat_id: chat,
+        message_id: String(r.message_id),
+        user: r.user?.username ?? sender,
+        user_id: sender,
+        ts: new Date(r.date * 1000).toISOString(),
+        reaction: emoji,
+      },
+    },
+  }).catch(err => {
+    process.stderr.write(`telegram channel: failed to deliver reaction to Claude: ${err}\n`)
+  })
+})
+
 // LOCAL PATCH: ⏹ Stop on the status message interrupts the session.
 bot.callbackQuery('stop:run', async ctx => {
   const gated = dmCommandGate(ctx)
@@ -1852,7 +1958,7 @@ if (channelMode.poll && !routed) void (async () => {
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.start({
-        allowed_updates: ['message', 'edited_message', 'callback_query', 'stopped_message_generation'] as any,
+        allowed_updates: ['message', 'edited_message', 'callback_query', 'message_reaction', 'stopped_message_generation'] as any,
         onStart: info => {
           attempt = 0
           botUsername = info.username

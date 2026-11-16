@@ -588,6 +588,14 @@ const ACTIONABLE = ['text', 'photo', 'document', 'voice', 'audio', 'video', 'vid
 async function handleUpdate(u: any): Promise<void> {
   const msg = u.message ?? u.edited_message
   const cq = u.callback_query
+  // Reactions carry no topic: offer them to every running session of that
+  // group; each one ignores reactions on messages it did not send.
+  if (u.message_reaction) {
+    const rc = u.message_reaction.chat
+    if (rc.type === 'private' || !rc.is_forum) deliver(slots.get('main')!, u)
+    else for (const s of running()) if (s.chat === String(rc.id) && runtime(s.name).sock) send(runtime(s.name).sock!, { update: u })
+    return
+  }
   const chat = msg?.chat ?? cq?.message?.chat ?? u.stopped_message_generation?.chat
   if (!chat) return
   const from = String((msg ?? cq)?.from?.id ?? '')
@@ -863,7 +871,7 @@ process.on('SIGINT', () => process.exit(0))
       const updates: any[] = await api('getUpdates', {
         offset,
         timeout: 30,
-        allowed_updates: ['message', 'edited_message', 'callback_query', 'stopped_message_generation'],
+        allowed_updates: ['message', 'edited_message', 'callback_query', 'message_reaction', 'stopped_message_generation'],
       })
       attempt = 0
       for (const u of updates) {

@@ -1,2 +1,14 @@
 node_modules/
 .DS_Store
+
+# 运行时状态与密钥：插件把这些放在 ~/.claude/channels/telegram/，
+# 这里再兜底一次，防止误复制进仓库
+.env
+.env.*
+access.json
+approved/
+inbox/
+bot.pid
+*.pem
+*.key
+id_*

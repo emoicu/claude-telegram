@@ -483,6 +483,10 @@ mcp.setNotificationHandler(
   async ({ params }) => {
     const { request_id, tool_name, description, input_preview } = params
     pendingPermissions.set(request_id, { tool_name, description, input_preview })
+    // Lets hooks/notify-telegram.ts skip prompts we already relayed with buttons.
+    try {
+      writeFileSync(join(STATE_DIR, 'last-permission-relay'), String(Date.now()))
+    } catch {}
     const access = loadAccess()
     const text = `🔐 Permission: ${tool_name}`
     const keyboard = new InlineKeyboard()

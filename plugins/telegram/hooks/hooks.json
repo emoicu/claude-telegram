@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/notify-telegram.ts\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -56,9 +56,9 @@ const INBOX_DIR = join(STATE_DIR, 'inbox')
 const PID_FILE = join(STATE_DIR, 'bot.pid')
 
 // LOCAL PATCH: downloaded photos and files pile up in the inbox. Delete those
-// older than TELEGRAM_INBOX_KEEP_DAYS (default 7, 0 keeps everything), at
+// older than TELEGRAM_INBOX_KEEP_DAYS (default 30, 0 keeps everything), at
 // startup and every six hours.
-const INBOX_KEEP_DAYS = Number(process.env.TELEGRAM_INBOX_KEEP_DAYS ?? 7)
+const INBOX_KEEP_DAYS = Number(process.env.TELEGRAM_INBOX_KEEP_DAYS ?? 30)
 
 function pruneInbox(): void {
   if (!(INBOX_KEEP_DAYS > 0)) return

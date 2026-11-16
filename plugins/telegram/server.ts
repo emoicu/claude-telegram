@@ -19,7 +19,7 @@ import { z } from 'zod'
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import { randomBytes } from 'crypto'
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync, openSync, readSync, closeSync, fstatSync } from 'fs'
 import { homedir } from 'os'
 import { execFileSync } from 'child_process'
 import { join, extname, sep } from 'path'
@@ -65,7 +65,7 @@ const PID_FILE = join(STATE_DIR, 'bot.pid')
 // looks for `--channels` / `--dangerously-load-development-channels` naming
 // this plugin. TELEGRAM_CHANNEL_MODE=always|never overrides; if no Claude
 // ancestor is found we fall back to polling (upstream behaviour).
-function detectChannelMode(): { poll: boolean; reason: string } {
+function detectChannelMode(): { poll: boolean; reason: string; claudePid?: number } {
   const override = process.env.TELEGRAM_CHANNEL_MODE
   if (override === 'always') return { poll: true, reason: 'TELEGRAM_CHANNEL_MODE=always' }
   if (override === 'never') return { poll: false, reason: 'TELEGRAM_CHANNEL_MODE=never' }
@@ -89,8 +89,8 @@ function detectChannelMode(): { poll: boolean; reason: string } {
       const hasFlag = /--(channels|dangerously-load-development-channels)\b/.test(args)
       const namesUs = /\bplugin:telegram@|\bserver:telegram\b/.test(args)
       return hasFlag && namesUs
-        ? { poll: true, reason: `channel enabled in claude pid=${pid}` }
-        : { poll: false, reason: `claude pid=${pid} did not load telegram as a channel` }
+        ? { poll: true, reason: `channel enabled in claude pid=${pid}`, claudePid: pid }
+        : { poll: false, reason: `claude pid=${pid} did not load telegram as a channel`, claudePid: pid }
     }
     pid = parseInt(m[1], 10)
   }
@@ -640,6 +640,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           sentIds.length === 1
             ? `sent (id: ${sentIds[0]})`
             : `sent ${sentIds.length} parts (ids: ${sentIds.join(', ')})`
+        noteStatusReply(chat_id)
         return { content: [{ type: 'text', text: result }] }
       }
       case 'react': {
@@ -997,6 +998,7 @@ async function handleInbound(
 
   // Typing indicator — signals "processing" until we reply (or ~5s elapses).
   void bot.api.sendChatAction(chat_id, 'typing').catch(() => {})
+  noteStatusChat(chat_id)
 
   // Ack reaction — lets the user know we're processing. Fire-and-forget.
   // Telegram only accepts a fixed emoji whitelist — if the user configures
@@ -1055,6 +1057,251 @@ async function handleInbound(
   }).catch(err => {
     process.stderr.write(`telegram channel: failed to deliver inbound to Claude: ${err}\n`)
   })
+}
+
+// LOCAL PATCH: live work status. Telegram's typing indicator lasts ~5s, so
+// during a long turn (editing code, searching) the chat looked dead. While
+// the owning Claude session is busy we re-send typing every few seconds and,
+// for turns longer than STATUS_SHOW_AFTER_MS, keep one status message edited
+// in place with elapsed time, the current step and a step count. Busy/idle
+// comes from ~/.claude/sessions/<claude pid>.json; steps come from tool_use
+// entries in the session transcript. TELEGRAM_STATUS=off disables it.
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+const STATUS_ENABLED =
+  channelMode.poll && channelMode.claudePid != null && process.env.TELEGRAM_STATUS !== 'off'
+const STATUS_POLL_MS = 2000
+const STATUS_SHOW_AFTER_MS = 8000 // short turns get typing only, no status message
+const STATUS_EDIT_MIN_MS = 4000 // stay well under Telegram's edit rate limits
+const STATUS_IDLE_TICKS = 2 // debounce: idle must persist this many polls
+const STATUS_MOVE_AFTER_REPLY_MS = 5000 // re-post below a reply if work continues
+const TYPING_EVERY_MS = 4500
+const TRANSCRIPT_TAIL_BYTES = 512 * 1024
+
+type Work = {
+  start: number
+  chat: string
+  sinceIso: string
+  seen: Set<string>
+  steps: number
+  current?: string
+  msgId?: number
+  lastText?: string
+  lastEdit: number
+  lastTyping: number
+  replyAt?: number
+  idleTicks: number
+}
+
+// Chat that receives status updates: the last allowlisted chat that messaged
+// us. TELEGRAM_STATUS_CHAT presets it (e.g. so terminal-started turns show too).
+let statusChat: string | undefined = process.env.TELEGRAM_STATUS_CHAT || undefined
+let work: Work | undefined
+let statusTicking = false
+let transcriptCache: { sid: string; path: string } | undefined
+
+function noteStatusChat(chat_id: string): void {
+  statusChat = chat_id
+}
+
+function noteStatusReply(chat_id: string): void {
+  if (work && work.chat === chat_id && work.msgId != null) work.replyAt = Date.now()
+}
+
+function readClaudeSession(): { status?: string; sessionId?: string } | undefined {
+  try {
+    return JSON.parse(readFileSync(join(CLAUDE_DIR, 'sessions', `${channelMode.claudePid}.json`), 'utf8'))
+  } catch {
+    return undefined
+  }
+}
+
+function findTranscript(sid: string): string | undefined {
+  if (transcriptCache?.sid === sid) return transcriptCache.path
+  const root = join(CLAUDE_DIR, 'projects')
+  try {
+    for (const dir of readdirSync(root)) {
+      const p = join(root, dir, `${sid}.jsonl`)
+      try {
+        statSync(p)
+        transcriptCache = { sid, path: p }
+        return p
+      } catch {}
+    }
+  } catch {}
+  return undefined
+}
+
+function readTail(path: string): string {
+  const fd = openSync(path, 'r')
+  try {
+    const size = fstatSync(fd).size
+    const len = Math.min(size, TRANSCRIPT_TAIL_BYTES)
+    const buf = Buffer.alloc(len)
+    readSync(fd, buf, 0, len, size - len)
+    return buf.toString('utf8')
+  } finally {
+    closeSync(fd)
+  }
+}
+
+function clip(s: string, n: number): string {
+  const one = s.replace(/\s+/g, ' ').trim()
+  return one.length > n ? one.slice(0, n - 1) + '…' : one
+}
+
+function describeTool(name: string, input: Record<string, unknown>): string {
+  const str = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '')
+  const base = (p: string) => p.split('/').pop() || p
+  if (typeof input.description === 'string' && input.description) return clip(input.description, 80)
+  switch (name) {
+    case 'Bash': return `运行命令：${clip(str('command'), 60)}`
+    case 'Read': return `读取 ${base(str('file_path'))}`
+    case 'Edit': return `修改 ${base(str('file_path'))}`
+    case 'Write': return `写入 ${base(str('file_path'))}`
+    case 'Grep': return `搜索：${clip(str('pattern'), 50)}`
+    case 'Glob': return `查找文件：${clip(str('pattern'), 50)}`
+    case 'WebSearch': return `网上搜索：${clip(str('query'), 50)}`
+    case 'WebFetch': return `读取网页：${clip(str('url'), 60)}`
+    case 'ToolSearch': return '加载工具'
+  }
+  if (name.startsWith('mcp__plugin_telegram_telegram__')) {
+    const t = name.slice('mcp__plugin_telegram_telegram__'.length)
+    return t === 'reply' ? '发送 TG 消息' : `TG：${t}`
+  }
+  return name.replace(/^mcp__/, '').replace(/__/g, ' · ')
+}
+
+function scanSteps(w: Work, path: string): void {
+  let tail: string
+  try {
+    tail = readTail(path)
+  } catch {
+    return
+  }
+  const lines = tail.split('\n')
+  for (let i = 1; i < lines.length; i++) { // line 0 may be cut in half
+    const line = lines[i]
+    if (!line || !line.includes('"tool_use"')) continue
+    let entry: any
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (entry?.type !== 'assistant' || typeof entry.timestamp !== 'string') continue
+    if (entry.timestamp < w.sinceIso) continue
+    for (const c of entry.message?.content ?? []) {
+      if (c?.type !== 'tool_use' || typeof c.id !== 'string' || w.seen.has(c.id)) continue
+      w.seen.add(c.id)
+      w.steps++
+      w.current = describeTool(String(c.name ?? ''), (c.input ?? {}) as Record<string, unknown>)
+    }
+  }
+}
+
+function fmtElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+function renderStatus(w: Work, now: number): string {
+  return [
+    `⏳ 正在处理…  已用时 ${fmtElapsed(now - w.start)}`,
+    `🔧 ${w.current ?? '思考中'}`,
+    `📝 已执行 ${w.steps} 步`,
+  ].join('\n')
+}
+
+async function finishWork(w: Work): Promise<void> {
+  if (w.msgId == null) return
+  const text = `✅ 完成 · 用时 ${fmtElapsed(Date.now() - w.start)} · 共 ${w.steps} 步`
+  await bot.api.editMessageText(w.chat, w.msgId, text).catch(() => {})
+}
+
+async function statusTick(): Promise<void> {
+  const now = Date.now()
+  const session = readClaudeSession()
+  const busy = session?.status === 'busy'
+
+  if (!busy) {
+    if (work && ++work.idleTicks >= STATUS_IDLE_TICKS) {
+      const w = work
+      work = undefined
+      await finishWork(w)
+    }
+    return
+  }
+  if (!work) {
+    if (!statusChat) return
+    work = {
+      start: now,
+      chat: statusChat,
+      sinceIso: new Date(now - STATUS_POLL_MS).toISOString(),
+      seen: new Set(),
+      steps: 0,
+      lastEdit: 0,
+      lastTyping: 0,
+      idleTicks: 0,
+    }
+  }
+  const w = work
+  w.idleTicks = 0
+
+  if (now - w.lastTyping >= TYPING_EVERY_MS) {
+    w.lastTyping = now
+    void bot.api.sendChatAction(w.chat, 'typing').catch(() => {})
+  }
+
+  const path = session?.sessionId ? findTranscript(session.sessionId) : undefined
+  if (path) scanSteps(w, path)
+
+  if (now - w.start < STATUS_SHOW_AFTER_MS) return
+
+  // Claude replied mid-turn and kept working: move the status below the
+  // reply so it stays visible. Only the in-progress message is removed.
+  if (w.msgId != null && w.replyAt != null && now - w.replyAt >= STATUS_MOVE_AFTER_REPLY_MS) {
+    const old = w.msgId
+    w.msgId = undefined
+    w.replyAt = undefined
+    await bot.api.deleteMessage(w.chat, old).catch(() => {})
+  }
+
+  const text = renderStatus(w, now)
+  if (w.msgId == null) {
+    if (now < w.lastEdit) return // backing off after a failed send
+    try {
+      const sent = await bot.api.sendMessage(w.chat, text, { disable_notification: true })
+      w.msgId = sent.message_id
+      w.lastText = text
+      w.lastEdit = now
+    } catch (err) {
+      w.lastEdit = now + 10_000 // back off (rate limit / network)
+      process.stderr.write(`telegram channel: status send failed: ${err}\n`)
+    }
+    return
+  }
+  if (text !== w.lastText && now - w.lastEdit >= STATUS_EDIT_MIN_MS) {
+    w.lastEdit = now
+    try {
+      await bot.api.editMessageText(w.chat, w.msgId, text)
+      w.lastText = text
+    } catch (err) {
+      w.lastEdit = now + 10_000
+      process.stderr.write(`telegram channel: status edit failed: ${err}\n`)
+    }
+  }
+}
+
+if (STATUS_ENABLED) {
+  setInterval(() => {
+    if (statusTicking || shuttingDown) return
+    statusTicking = true
+    statusTick()
+      .catch(err => process.stderr.write(`telegram channel: status tick error: ${err}\n`))
+      .finally(() => {
+        statusTicking = false
+      })
+  }, STATUS_POLL_MS).unref()
 }
 
 // Without this, any throw in a message handler stops polling permanently

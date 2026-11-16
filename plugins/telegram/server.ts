@@ -1063,7 +1063,8 @@ async function handleInbound(
 // during a long turn (editing code, searching) the chat looked dead. While
 // the owning Claude session is busy we re-send typing every few seconds and,
 // for turns longer than STATUS_SHOW_AFTER_MS, keep one status message edited
-// in place with elapsed time, the current step and a step count. Busy/idle
+// in place with elapsed time, the current step and a step count (deleted
+// when the turn ends). Busy/idle
 // comes from ~/.claude/sessions/<claude pid>.json; steps come from tool_use
 // entries in the session transcript. TELEGRAM_STATUS=off disables it.
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
@@ -1154,19 +1155,19 @@ function describeTool(name: string, input: Record<string, unknown>): string {
   const base = (p: string) => p.split('/').pop() || p
   if (typeof input.description === 'string' && input.description) return clip(input.description, 80)
   switch (name) {
-    case 'Bash': return `运行命令：${clip(str('command'), 60)}`
-    case 'Read': return `读取 ${base(str('file_path'))}`
-    case 'Edit': return `修改 ${base(str('file_path'))}`
-    case 'Write': return `写入 ${base(str('file_path'))}`
-    case 'Grep': return `搜索：${clip(str('pattern'), 50)}`
-    case 'Glob': return `查找文件：${clip(str('pattern'), 50)}`
-    case 'WebSearch': return `网上搜索：${clip(str('query'), 50)}`
-    case 'WebFetch': return `读取网页：${clip(str('url'), 60)}`
-    case 'ToolSearch': return '加载工具'
+    case 'Bash': return `Running: ${clip(str('command'), 60)}`
+    case 'Read': return `Reading ${base(str('file_path'))}`
+    case 'Edit': return `Editing ${base(str('file_path'))}`
+    case 'Write': return `Writing ${base(str('file_path'))}`
+    case 'Grep': return `Searching: ${clip(str('pattern'), 50)}`
+    case 'Glob': return `Finding files: ${clip(str('pattern'), 50)}`
+    case 'WebSearch': return `Web search: ${clip(str('query'), 50)}`
+    case 'WebFetch': return `Fetching: ${clip(str('url'), 60)}`
+    case 'ToolSearch': return 'Loading tools'
   }
   if (name.startsWith('mcp__plugin_telegram_telegram__')) {
     const t = name.slice('mcp__plugin_telegram_telegram__'.length)
-    return t === 'reply' ? '发送 TG 消息' : `TG：${t}`
+    return t === 'reply' ? 'Sending Telegram message' : `Telegram: ${t}`
   }
   return name.replace(/^mcp__/, '').replace(/__/g, ' · ')
 }
@@ -1206,16 +1207,17 @@ function fmtElapsed(ms: number): string {
 
 function renderStatus(w: Work, now: number): string {
   return [
-    `⏳ 正在处理…  已用时 ${fmtElapsed(now - w.start)}`,
-    `🔧 ${w.current ?? '思考中'}`,
-    `📝 已执行 ${w.steps} 步`,
+    `⏳ Working…  ${fmtElapsed(now - w.start)} elapsed`,
+    `🔧 ${w.current ?? 'Thinking'}`,
+    `📝 ${w.steps} ${w.steps === 1 ? 'step' : 'steps'} so far`,
   ].join('\n')
 }
 
+// The status message is scaffolding: once the turn ends it is deleted so the
+// chat only keeps Claude's real replies.
 async function finishWork(w: Work): Promise<void> {
   if (w.msgId == null) return
-  const text = `✅ 完成 · 用时 ${fmtElapsed(Date.now() - w.start)} · 共 ${w.steps} 步`
-  await bot.api.editMessageText(w.chat, w.msgId, text).catch(() => {})
+  await bot.api.deleteMessage(w.chat, w.msgId).catch(() => {})
 }
 
 async function statusTick(): Promise<void> {

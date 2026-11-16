@@ -40,6 +40,7 @@ const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels',
 const ROUTER_DIR = join(STATE_DIR, 'router')
 const SOCKET = join(STATE_DIR, 'router.sock')
 const SLOTS_FILE = join(ROUTER_DIR, 'slots.json')
+const QUEUE_FILE = join(ROUTER_DIR, 'queue.json')
 const LOG_FILE = join(ROUTER_DIR, 'router.log')
 
 const CLAUDE_CMD = (
@@ -57,6 +58,7 @@ const TICK_MS = 3000
 const QUICK_EXIT_MS = 60_000 // a session that dies sooner than this "crashed quickly"
 const MAX_QUICK_EXITS = 3 // then stop restarting it and tell the user
 const DIALOG_WINDOW_MS = 120_000 // look for the development-channels dialog this long
+const START_TIMEOUT_MS = 120_000 // a session that has not connected by then is stuck
 const UPDATE_CHECK_MS = 10 * 60_000 // how often to look for a newer Claude Code on disk
 const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this much quiet
 
@@ -173,6 +175,8 @@ type Runtime = {
   rssMB?: number
   quickExits: number
   gaveUp?: boolean
+  connected?: boolean // has said hello since it started
+  startRetried?: boolean // already restarted once for not connecting
   sock?: Socket<SockData>
   queue: unknown[]
   startNotice?: { chat: string; id: number }
@@ -397,6 +401,23 @@ function sessionEnv(slot: Slot): Record<string, string> {
   return env
 }
 
+/**
+ * After the plugin's MCP server fails to start once, Claude Code remembers it
+ * in mcp-needs-auth-cache.json and later sessions skip it for a while, so a
+ * new session would never connect. Forget that before every start.
+ */
+function clearFailedMark(): void {
+  const file = join(CLAUDE_DIR, 'mcp-needs-auth-cache.json')
+  try {
+    const cache = JSON.parse(readFileSync(file, 'utf8'))
+    const keys = Object.keys(cache).filter(k => /^plugin:telegram:/.test(k))
+    if (!keys.length) return
+    for (const k of keys) delete cache[k]
+    writeFileSync(file, JSON.stringify(cache))
+    log(`cleared failed-start mark for ${keys.join(', ')}`)
+  } catch {}
+}
+
 async function start(slot: Slot): Promise<void> {
   const r = runtime(slot.name)
   if (alive(r.pid)) return
@@ -406,6 +427,7 @@ async function start(slot: Slot): Promise<void> {
       tmux('kill-window', '-t', stale.id)
     } catch {}
   }
+  clearFailedMark()
   const resume = validSession(slot.sessionId) ? ['--resume', slot.sessionId!] : []
   if (slot.sessionId && !resume.length) log(`${slot.name}: session ${slot.sessionId} is gone, starting fresh`)
   const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `${TMUX_SESSION}:`, '-n', displayName(slot), '-c', existsSync(slot.cwd) ? slot.cwd : MAIN_CWD]
@@ -419,7 +441,7 @@ async function start(slot: Slot): Promise<void> {
     return
   }
   const pid = windowPid(slot.name)
-  Object.assign(r, { pid, startedAt: Date.now(), stopping: false, dialogDone: false, status: undefined, queuedNotice: false })
+  Object.assign(r, { pid, startedAt: Date.now(), stopping: false, dialogDone: false, status: undefined, queuedNotice: false, connected: false })
   slot.lastActive = Date.now()
   dirty = true
   log(`${slot.name}: started pid ${pid}${resume.length ? ` resuming ${slot.sessionId}` : ' (new session)'} in ${slot.cwd}`)
@@ -466,12 +488,40 @@ function flush(sock: Socket<SockData>): void {
   sock.data.out = n > 0 ? sock.data.out.slice(n) : sock.data.out
 }
 
+/** Updates waiting for a session survive a router restart. */
+function saveQueue(): void {
+  const all: Record<string, unknown[]> = {}
+  for (const [name, r] of rt) if (r.queue.length) all[name] = r.queue
+  try {
+    if (Object.keys(all).length) {
+      writeFileSync(QUEUE_FILE + '.tmp', JSON.stringify(all), { mode: 0o600 })
+      renameSync(QUEUE_FILE + '.tmp', QUEUE_FILE)
+    } else rmSync(QUEUE_FILE, { force: true })
+  } catch (err) {
+    log(`saving queue failed: ${err}`)
+  }
+}
+
+function loadQueue(): void {
+  try {
+    const all = JSON.parse(readFileSync(QUEUE_FILE, 'utf8')) as Record<string, unknown[]>
+    for (const [name, updates] of Object.entries(all)) {
+      if (!slots.has(name) || !Array.isArray(updates)) continue
+      runtime(name).queue.push(...updates)
+      log(`${name}: ${updates.length} queued update(s) restored`)
+    }
+  } catch {}
+}
+
 function deliver(slot: Slot, update: unknown): void {
   const r = runtime(slot.name)
   slot.lastActive = Date.now()
   dirty = true
   if (r.sock) send(r.sock, { update })
-  else r.queue.push(update)
+  else {
+    r.queue.push(update)
+    saveQueue()
+  }
 }
 
 async function onHello(sock: Socket<SockData>, name: string): Promise<void> {
@@ -485,7 +535,12 @@ async function onHello(sock: Socket<SockData>, name: string): Promise<void> {
   r.sock = sock
   r.dialogDone = true
   log(`${name}: session connected (${r.queue.length} queued)`)
-  for (const u of r.queue.splice(0)) send(sock, { update: u })
+  r.connected = true
+  r.startRetried = false
+  if (r.queue.length) {
+    for (const u of r.queue.splice(0)) send(sock, { update: u })
+    saveQueue()
+  }
   if (r.startNotice) {
     const { chat, id } = r.startNotice
     r.startNotice = undefined
@@ -646,6 +701,7 @@ async function tick(): Promise<void> {
       r.version = (info as { version?: string } | undefined)?.version ?? r.version
       if (r.status && r.status !== 'idle') slot.lastActive = Date.now()
       confirmDialog(slot, r)
+      if (!r.connected && !r.stopping && Date.now() - r.startedAt > START_TIMEOUT_MS) await startTimedOut(slot, r)
       if (!slot.pinned && r.status === 'idle' && !r.queue.length && Date.now() - slot.lastActive > IDLE_MS && !r.stopping) {
         stop(slot, `idle for ${Math.round((Date.now() - slot.lastActive) / 60_000)} min`)
       }
@@ -686,6 +742,33 @@ async function tick(): Promise<void> {
   }
   checkForUpdate()
   saveSlots()
+}
+
+/** A session that never connected: tell the user what its screen shows, retry once. */
+async function startTimedOut(slot: Slot, r: Runtime): Promise<void> {
+  let screen = ''
+  try {
+    screen = tmux('capture-pane', '-p', '-t', windowTarget(slot.name))
+      .split('\n').filter(l => l.trim()).slice(-8).join('\n')
+  } catch {}
+  const again = !r.startRetried
+  log(`${slot.name}: not connected after ${START_TIMEOUT_MS / 1000}s${again ? ', restarting once' : ', giving up'}`)
+  await notify(
+    slot,
+    `⚠️ This session started but has not connected after ${START_TIMEOUT_MS / 60_000} minutes. ` +
+      (again ? 'Restarting it once.' : 'Gave up; send a message here to try again.') +
+      (screen ? `\n\nLast lines of its terminal:\n${screen.slice(-800)}` : ''),
+  )
+  r.connected = true // report once per start
+  if (again) {
+    r.startRetried = true
+    stop(slot, 'start timed out')
+    r.stopping = false // treat as an exit to restart, not a planned stop
+  } else {
+    r.gaveUp = true
+    r.startRetried = false
+    stop(slot, 'start timed out twice')
+  }
 }
 
 // ---- Claude Code updates ---------------------------------------------------
@@ -739,6 +822,7 @@ function checkForUpdate(): void {
 // ---- main -----------------------------------------------------------------
 
 loadSlots()
+loadQueue()
 // Adopt sessions that kept running while the router restarted.
 for (const slot of slots.values()) {
   const pid = windowPid(slot.name)

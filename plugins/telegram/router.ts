@@ -363,6 +363,7 @@ function sessionEnv(slot: Slot): Record<string, string> {
   if (slot.chat && slot.thread) {
     env.TELEGRAM_TOPIC_CHAT = slot.chat
     env.TELEGRAM_TOPIC_THREAD = String(slot.thread)
+    if (slot.title) env.TELEGRAM_TOPIC_TITLE = slot.title
   }
   return env
 }

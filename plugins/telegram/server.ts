@@ -996,6 +996,118 @@ if (COMMAND_HELPER && channelMode.poll) {
   })
 }
 
+// LOCAL PATCH: answers to questions that hooks/ask-telegram.ts moved from the
+// terminal picker into the chat. Callback data is `ask:<id>:<question>:<option>`
+// or `ask:<id>:<question>:d` (Done, multi-select). State lives in
+// <state>/ask/<id>.json; once every question is answered the answers are
+// delivered to Claude as one channel message.
+type AskRecord = {
+  id: string
+  created: number
+  delivered: boolean
+  questions: {
+    header: string
+    question: string
+    multiSelect: boolean
+    options: string[]
+    selected: number[]
+    done: boolean
+    messages: Record<string, number>
+    text: string
+  }[]
+}
+
+function askKeyboard(rec: AskRecord, qi: number): InlineKeyboard {
+  const q = rec.questions[qi]!
+  const kb = new InlineKeyboard()
+  q.options.forEach((label, i) => {
+    const mark = q.multiSelect && q.selected.includes(i) ? '✔ ' : ''
+    const text = `${mark}${i + 1}. ${label}`
+    kb.text(text.length > 60 ? text.slice(0, 59) + '…' : text, `ask:${rec.id}:${qi}:${i}`).row()
+  })
+  if (q.multiSelect) kb.text('✅ Done', `ask:${rec.id}:${qi}:d`)
+  return kb
+}
+
+bot.callbackQuery(/^ask:/, async ctx => {
+  const m = /^ask:([0-9a-f]{8}):(\d+):(\d+|d)$/.exec(ctx.callbackQuery.data)
+  const access = loadAccess()
+  const senderId = String(ctx.from.id)
+  if (!m || !access.allowFrom.includes(senderId)) {
+    await ctx.answerCallbackQuery({ text: m ? 'Not authorized.' : undefined }).catch(() => {})
+    return
+  }
+  const file = join(STATE_DIR, 'ask', `${m[1]}.json`)
+  let rec: AskRecord
+  try {
+    rec = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    await ctx.answerCallbackQuery({ text: 'This question has expired.' }).catch(() => {})
+    return
+  }
+  const qi = Number(m[2])
+  const q = rec.questions[qi]
+  if (!q || q.done || rec.delivered) {
+    await ctx.answerCallbackQuery({ text: 'Already answered.' }).catch(() => {})
+    return
+  }
+  const choice = m[3]!
+  if (choice !== 'd') {
+    const oi = Number(choice)
+    if (!(oi >= 0 && oi < q.options.length)) {
+      await ctx.answerCallbackQuery().catch(() => {})
+      return
+    }
+    if (q.multiSelect) {
+      q.selected = q.selected.includes(oi) ? q.selected.filter(x => x !== oi) : [...q.selected, oi].sort((a, b) => a - b)
+    } else {
+      q.selected = [oi]
+      q.done = true
+    }
+  } else {
+    q.done = true
+  }
+
+  const chosen = q.selected.map(i => q.options[i]).join(', ') || '(none)'
+  // Update this question's message in every chat it was posted to.
+  for (const [chatId, msgId] of Object.entries(q.messages)) {
+    if (q.done) {
+      await bot.api.editMessageText(chatId, msgId, `${q.text}\n\n✅ ${chosen}`).catch(() => {})
+    } else {
+      await bot.api.editMessageReplyMarkup(chatId, msgId, { reply_markup: askKeyboard(rec, qi) }).catch(() => {})
+    }
+  }
+  await ctx.answerCallbackQuery({ text: q.done ? `Selected: ${chosen}` : undefined }).catch(() => {})
+
+  if (rec.questions.every(x => x.done) && !rec.delivered) {
+    rec.delivered = true
+    const lines = ['Answers to your questions (picked in Telegram):']
+    rec.questions.forEach((x, i) => {
+      const picked = x.selected.map(j => x.options[j]).join(', ') || '(none)'
+      lines.push(`${i + 1}. ${x.header ? `[${x.header}] ` : ''}${x.question}`, `   → ${picked}`)
+    })
+    const chat_id = String(ctx.chat?.id ?? senderId)
+    noteStatusChat(chat_id)
+    void mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: lines.join('\n'),
+        meta: {
+          chat_id,
+          user: ctx.from.username ?? senderId,
+          user_id: senderId,
+          ts: new Date().toISOString(),
+        },
+      },
+    }).catch(err => {
+      process.stderr.write(`telegram channel: failed to deliver answers to Claude: ${err}\n`)
+    })
+  }
+  try {
+    writeFileSync(file, JSON.stringify(rec))
+  } catch {}
+})
+
 // Inline-button handler for permission requests. Callback data is
 // `perm:allow:<id>`, `perm:deny:<id>`, or `perm:more:<id>`.
 // Security mirrors the text-reply path: allowFrom must contain the sender.

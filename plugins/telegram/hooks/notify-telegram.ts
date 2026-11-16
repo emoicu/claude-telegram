@@ -14,13 +14,10 @@
  * server.ts). Prompts that server.ts already relayed with Allow/Deny buttons
  * are skipped. TELEGRAM_NOTIFY=off disables it.
  */
-import { execFileSync } from 'child_process'
 import { readFileSync } from 'fs'
-import { homedir } from 'os'
 import { join } from 'path'
+import { STATE_DIR, isChannelSession, readHookInput, readToken, recipients } from './lib'
 
-const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels', 'telegram')
 const RELAY_GRACE_MS = 10_000 // a relay this recent means the chat already has buttons
 
 type HookInput = {
@@ -29,57 +26,6 @@ type HookInput = {
   message?: string
   title?: string
   transcript_path?: string
-}
-
-/** Same detection as server.ts: is our Claude ancestor running us as a channel? */
-function isChannelSession(): boolean {
-  const override = process.env.TELEGRAM_CHANNEL_MODE
-  if (override === 'always') return true
-  if (override === 'never') return false
-  let pid = process.ppid
-  for (let depth = 0; depth < 12 && pid > 1; depth++) {
-    let line: string
-    try {
-      line = execFileSync('ps', ['-o', 'ppid=,args=', '-p', String(pid)], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim()
-    } catch {
-      return false
-    }
-    const m = /^(\d+)\s+(.*)$/s.exec(line)
-    if (!m) return false
-    const args = m[2]!
-    const exe = args.split(/\s+/)[0] ?? ''
-    if (/(^|\/)claude$/.test(exe) || /\/claude\/versions\/[^/\s]+$/.test(exe)) {
-      return (
-        /--(channels|dangerously-load-development-channels)\b/.test(args) &&
-        /\bplugin:telegram@|\bserver:telegram\b/.test(args)
-      )
-    }
-    pid = parseInt(m[1]!, 10)
-  }
-  return false
-}
-
-function readToken(): string | undefined {
-  if (process.env.TELEGRAM_BOT_TOKEN) return process.env.TELEGRAM_BOT_TOKEN
-  try {
-    for (const line of readFileSync(join(STATE_DIR, '.env'), 'utf8').split('\n')) {
-      const m = /^TELEGRAM_BOT_TOKEN=(.*)$/.exec(line)
-      if (m) return m[1]!.trim()
-    }
-  } catch {}
-  return undefined
-}
-
-function recipients(): string[] {
-  try {
-    const access = JSON.parse(readFileSync(join(STATE_DIR, 'access.json'), 'utf8'))
-    return Array.isArray(access.allowFrom) ? access.allowFrom.map(String) : []
-  } catch {
-    return []
-  }
 }
 
 /** Most recent tool call in the transcript, to show what is being asked. */
@@ -112,10 +58,7 @@ function lastToolCall(path?: string): string | undefined {
 
 async function main(): Promise<void> {
   if (process.env.TELEGRAM_NOTIFY === 'off') return
-  let input: HookInput = {}
-  try {
-    input = JSON.parse(await new Response(Bun.stdin.stream()).text())
-  } catch {}
+  const input = (await readHookInput<HookInput>()) ?? {}
   if (input.hook_event_name && input.hook_event_name !== 'Notification') return
 
   // Only prompts that need a person: permission prompts and MCP elicitation

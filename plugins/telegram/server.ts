@@ -663,16 +663,95 @@ const PAUSE_REACTION = '🙏' // also interrupts a running turn
 const SENT_FILE = join(STATE_DIR, `sent-messages${SLOT === 'main' ? '' : `-${SLOT}`}.json`)
 const SENT_KEEP = 300
 
-function reactionMap(): Record<string, string> {
-  const map = { ...DEFAULT_REACTIONS }
+const DEFAULT_LABELS: Record<string, string> = {
+  '👍': 'Go on', '👌': 'Your pick', '👎': 'Rethink', '🤔': 'Explain', '👀': 'More',
+  '✍': 'Write down', '❤': 'Remember', '🔥': 'Do it', '🙏': 'Pause', '🎉': 'Wrap up',
+}
+// Shown first under the latest reply; the rest sit behind "⋯".
+const QUICK_FIRST = ['👍', '👎', '🤔', '🔥']
+// dm (default): quick buttons under replies in direct messages; all: also in
+// groups; off: none.
+const QUICK_BUTTONS = process.env.TELEGRAM_QUICK_BUTTONS ?? 'dm'
+
+type Shortcut = { meaning: string; label: string }
+
+function shortcuts(): Map<string, Shortcut> {
+  const map = new Map<string, Shortcut>()
+  for (const [e, meaning] of Object.entries(DEFAULT_REACTIONS)) map.set(e, { meaning, label: DEFAULT_LABELS[e] ?? '' })
   try {
-    const custom = JSON.parse(readFileSync(join(STATE_DIR, 'reactions.json'), 'utf8')) as Record<string, string | null>
-    for (const [emoji, meaning] of Object.entries(custom)) {
-      if (meaning == null) delete map[emoji]
-      else map[emoji] = String(meaning)
+    const custom = JSON.parse(readFileSync(join(STATE_DIR, 'reactions.json'), 'utf8')) as
+      Record<string, string | { meaning?: string; label?: string } | null>
+    for (const [e, v] of Object.entries(custom)) {
+      if (v == null) map.delete(e)
+      else if (typeof v === 'string') map.set(e, { meaning: v, label: map.get(e)?.label ?? '' })
+      else map.set(e, { meaning: v.meaning ?? map.get(e)?.meaning ?? '', label: v.label ?? map.get(e)?.label ?? '' })
     }
   } catch {}
+  for (const [e, v] of map) if (!v.meaning) map.delete(e)
   return map
+}
+
+const bare = (emoji: string) => emoji.replace(/\uFE0F/g, '')
+
+function reactionMap(): Record<string, string> {
+  return Object.fromEntries([...shortcuts()].map(([e, v]) => [e, v.meaning]))
+}
+
+/** Tell Claude the user picked a shortcut on one of its messages. */
+function deliverShortcut(chat: string, messageId: number, emoji: string, user: { id: string; username?: string }, via: string): boolean {
+  const sent = findSent(chat, messageId)
+  const sc = shortcuts().get(bare(emoji)) ?? shortcuts().get(emoji)
+  if (!sent || !sc) return false
+  if (bare(emoji) === PAUSE_REACTION) interruptClaude()
+  const quote = sent.text.replace(/\s+/g, ' ').trim()
+  noteStatusChat(chat)
+  void mcp.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      content:
+        `[${via} ${emoji} on your message ${messageId}] ${sc.meaning}\n` +
+        `Your message began: "${quote.length > 200 ? quote.slice(0, 199) + '…' : quote}"`,
+      meta: {
+        chat_id: chat,
+        message_id: String(messageId),
+        user: user.username ?? user.id,
+        user_id: user.id,
+        ts: new Date().toISOString(),
+        reaction: emoji,
+      },
+    },
+  }).catch(err => {
+    process.stderr.write(`telegram channel: failed to deliver shortcut to Claude: ${err}\n`)
+  })
+  return true
+}
+
+// Quick buttons under the latest reply. Only one message carries them at a
+// time; the previous one loses its buttons when a new reply goes out.
+let quickMsg: { chat: string; id: number } | undefined
+
+function quickKeyboard(messageId: number, all: boolean): InlineKeyboard {
+  const map = shortcuts()
+  const emojis = [...map.keys()]
+  const shown = all ? emojis : QUICK_FIRST.filter(e => map.has(e))
+  const kb = new InlineKeyboard()
+  shown.forEach((e, i) => {
+    const label = map.get(e)!.label
+    kb.text(label ? `${e} ${label}` : e, `qr:${messageId}:${emojis.indexOf(e)}`)
+    if (all && (i + 1) % 3 === 0) kb.row()
+  })
+  if (!all && emojis.length > shown.length) kb.text('⋯', `qr:${messageId}:more`)
+  return kb
+}
+
+async function attachQuick(chat: string, messageId: number): Promise<void> {
+  if (QUICK_BUTTONS === 'off' || (QUICK_BUTTONS === 'dm' && !isPrivateChat(chat))) return
+  const prev = quickMsg
+  quickMsg = { chat, id: messageId }
+  if (prev && !(prev.chat === chat && prev.id === messageId)) {
+    await bot.api.editMessageReplyMarkup(prev.chat, prev.id, { reply_markup: new InlineKeyboard() }).catch(() => {})
+  }
+  await bot.api.editMessageReplyMarkup(chat, messageId, { reply_markup: quickKeyboard(messageId, false) }).catch(() => {})
 }
 
 type SentRecord = { chat: string; id: number; text: string }
@@ -799,7 +878,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             ? `sent (id: ${sentIds[0]})`
             : `sent ${sentIds.length} parts (ids: ${sentIds.join(', ')})`
         noteStatusReply(chat_id)
-        if (sentIds.length) rememberSent(chat_id, sentIds, text)
+        if (sentIds.length) {
+          rememberSent(chat_id, sentIds, text)
+          void attachQuick(chat_id, sentIds[sentIds.length - 1]!)
+        }
         return { content: [{ type: 'text', text: result }] }
       }
       case 'react': {
@@ -1883,40 +1965,45 @@ bot.on('message_reaction', async ctx => {
     ? access.allowFrom.includes(sender)
     : TOPIC_CHAT === chat && (access.groups[chat]?.allowFrom?.length ? access.groups[chat]!.allowFrom! : access.allowFrom).includes(sender)
   if (!allowed) return
-  const sent = findSent(chat, r.message_id)
-  if (!sent) return // not ours (or not this session's)
   const before = new Set(r.old_reaction.filter(x => x.type === 'emoji').map(x => (x as { emoji: string }).emoji))
   const added = r.new_reaction
     .filter(x => x.type === 'emoji')
     .map(x => (x as { emoji: string }).emoji)
     .filter(e => !before.has(e))
-  const map = reactionMap()
-  const known = added.filter(e => map[e.replace(/\uFE0F/g, '')] ?? map[e])
-  if (!known.length) return
-  const emoji = known[0]!
-  const meaning = map[emoji.replace(/\uFE0F/g, '')] ?? map[emoji]!
-  if (emoji.replace(/\uFE0F/g, '') === PAUSE_REACTION) interruptClaude()
-  const quote = sent.text.replace(/\s+/g, ' ').trim()
-  noteStatusChat(chat)
-  void mcp.notification({
-    method: 'notifications/claude/channel',
-    params: {
-      content:
-        `[Reaction ${emoji} on your message ${r.message_id}] ${meaning}\n` +
-        `Your message began: "${quote.length > 200 ? quote.slice(0, 199) + '…' : quote}"`,
-      meta: {
-        chat_id: chat,
-        message_id: String(r.message_id),
-        user: r.user?.username ?? sender,
-        user_id: sender,
-        ts: new Date(r.date * 1000).toISOString(),
-        reaction: emoji,
-      },
-    },
-  }).catch(err => {
-    process.stderr.write(`telegram channel: failed to deliver reaction to Claude: ${err}\n`)
-  })
+  for (const emoji of added) {
+    if (deliverShortcut(chat, r.message_id, emoji, { id: sender, username: r.user?.username }, 'Reaction')) return
+  }
 })
+
+// LOCAL PATCH: quick buttons under the latest reply (see attachQuick).
+bot.callbackQuery(/^qr:/, async ctx => {
+  const m = /^qr:(\d+):(\d+|more)$/.exec(ctx.callbackQuery.data)
+  const gated = dmCommandGate(ctx)
+  if (!m || !gated || !gated.access.allowFrom.includes(gated.senderId)) {
+    await ctx.answerCallbackQuery({ text: m ? 'Not authorized.' : undefined }).catch(() => {})
+    return
+  }
+  const chat = String(ctx.chat?.id ?? '')
+  const messageId = Number(m[1])
+  if (m[2] === 'more') {
+    await ctx.answerCallbackQuery().catch(() => {})
+    await ctx.editMessageReplyMarkup({ reply_markup: quickKeyboard(messageId, true) }).catch(() => {})
+    return
+  }
+  const emoji = [...shortcuts().keys()][Number(m[2])]
+  const label = emoji ? shortcuts().get(emoji)?.label : undefined
+  if (!emoji || !deliverShortcut(chat, messageId, emoji, { id: gated.senderId, username: ctx.from?.username }, 'Button')) {
+    await ctx.answerCallbackQuery({ text: 'This message is too old for shortcuts.' }).catch(() => {})
+    return
+  }
+  await ctx.answerCallbackQuery({ text: `${emoji} ${label ?? ''}`.trim() }).catch(() => {})
+  // Show what was picked and retire the buttons.
+  await ctx.editMessageReplyMarkup({
+    reply_markup: new InlineKeyboard().text(`✓ ${emoji} ${label ?? ''}`.trim(), 'qr:done'),
+  }).catch(() => {})
+  if (quickMsg?.chat === chat && quickMsg.id === messageId) quickMsg = undefined
+})
+bot.callbackQuery('qr:done', ctx => ctx.answerCallbackQuery().catch(() => {}))
 
 // LOCAL PATCH: ⏹ Stop on the status message interrupts the session.
 bot.callbackQuery('stop:run', async ctx => {

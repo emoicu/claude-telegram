@@ -21,7 +21,7 @@ import type { ReactionTypeEmoji } from 'grammy/types'
 import { randomBytes } from 'crypto'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync, openSync, readSync, closeSync, fstatSync } from 'fs'
 import { homedir } from 'os'
-import { execFileSync } from 'child_process'
+import { execFile, execFileSync } from 'child_process'
 import { join, extname, sep } from 'path'
 
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR
@@ -779,6 +779,55 @@ bot.command('status', async ctx => {
   await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
 })
 
+// LOCAL PATCH: host-handled session commands. Claude Code's slash commands
+// (/clear, /usage, /model, /effort) can only be typed into its terminal, so
+// a Telegram message like "/model sonnet" used to be forwarded to Claude,
+// which then had to call a helper script itself. When
+// TELEGRAM_COMMAND_HELPER points at an executable, the plugin handles these
+// commands directly and runs `<helper> <command> [arg]` instead: no model
+// turn is spent and they work even while Claude is busy. The helper is
+// responsible for acting on the session and reporting back to the chat.
+// Without the env var these commands are forwarded to Claude as before.
+const COMMAND_HELPER = process.env.TELEGRAM_COMMAND_HELPER || undefined
+const HELPER_COMMANDS = [
+  { command: 'new', description: 'Start a fresh conversation' },
+  { command: 'usage', description: 'Show plan usage' },
+  { command: 'model', description: 'Switch model, e.g. /model sonnet' },
+  { command: 'effort', description: 'Set reasoning effort, e.g. /effort high' },
+] as const
+const HELPER_ARG = /^[A-Za-z0-9._:-]{1,40}$/
+
+if (COMMAND_HELPER && channelMode.poll) {
+  for (const { command } of HELPER_COMMANDS) {
+    bot.command(command, async ctx => {
+      const gated = dmCommandGate(ctx)
+      if (!gated) return
+      if (!gated.access.allowFrom.includes(gated.senderId)) {
+        await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
+        return
+      }
+      const arg = String(ctx.match ?? '').trim()
+      if (arg && !HELPER_ARG.test(arg)) {
+        await ctx.reply(`Invalid argument for /${command}: use letters, digits and . _ : - only.`)
+        return
+      }
+      const chatId = String(ctx.chat!.id)
+      const msgId = ctx.message?.message_id
+      noteStatusChat(chatId)
+      execFile(COMMAND_HELPER, arg ? [command, arg] : [command], { timeout: 30_000 }, err => {
+        if (!err) return
+        process.stderr.write(`telegram channel: command helper failed for /${command}: ${err}\n`)
+        void bot.api.sendMessage(chatId, `/${command} failed: ${err.message.split('\n')[0]}`).catch(() => {})
+      })
+      // Acknowledge receipt; the helper sends the actual result (or, for a
+      // bare /model or /effort, a picker keyboard) once the session is idle.
+      if (msgId != null && (arg || command === 'new' || command === 'usage')) {
+        void bot.api.setMessageReaction(chatId, msgId, [{ type: 'emoji', emoji: '👌' }]).catch(() => {})
+      }
+    })
+  }
+}
+
 // Inline-button handler for permission requests. Callback data is
 // `perm:allow:<id>`, `perm:deny:<id>`, or `perm:more:<id>`.
 // Security mirrors the text-reply path: allowFrom must contain the sender.
@@ -1330,6 +1379,7 @@ if (channelMode.poll) void (async () => {
               { command: 'start', description: 'Welcome and setup guide' },
               { command: 'help', description: 'What this bot can do' },
               { command: 'status', description: 'Check your pairing status' },
+              ...(COMMAND_HELPER ? HELPER_COMMANDS : []),
             ],
             { scope: { type: 'all_private_chats' } },
           ).catch(() => {})

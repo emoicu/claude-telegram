@@ -1357,13 +1357,12 @@ bot.callbackQuery(/^ask:/, async ctx => {
 // Inline-button handler for permission requests. Callback data is
 // `perm:allow:<id>`, `perm:deny:<id>`, or `perm:more:<id>`.
 // Security mirrors the text-reply path: allowFrom must contain the sender.
-bot.on('callback_query:data', async ctx => {
+bot.on('callback_query:data', async (ctx, next) => {
   const data = ctx.callbackQuery.data
   const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(data)
-  if (!m) {
-    await ctx.answerCallbackQuery().catch(() => {})
-    return
-  }
+  // LOCAL PATCH: let later handlers (quick buttons, Stop) see other data;
+  // a catch-all at the end still answers anything nobody handled.
+  if (!m) return next()
   const access = loadAccess()
   const senderId = String(ctx.from.id)
   if (!access.allowFrom.includes(senderId)) {
@@ -2029,6 +2028,10 @@ bot.use(async (ctx, next) => {
   const problem = interruptClaude()
   await bot.api.sendMessage(chat, problem ?? '⏹ Stopped.', { disable_notification: true }).catch(() => {})
 })
+
+// LOCAL PATCH: answer button presses nobody handled, so the client stops
+// showing a spinner.
+bot.on('callback_query:data', ctx => ctx.answerCallbackQuery().catch(() => {}))
 
 // Without this, any throw in a message handler stops polling permanently
 // (grammy's default error handler calls bot.stop() and rethrows).

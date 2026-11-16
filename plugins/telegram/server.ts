@@ -1959,18 +1959,18 @@ function fmtElapsed(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
+// One line: elapsed time, step count, current step.
 function renderStatus(w: Work, now: number): string {
-  return [
-    `⏳ Working…  ${fmtElapsed(now - w.start)} elapsed`,
-    `🔧 ${w.current ?? 'Thinking'}`,
-    `📝 ${w.steps} ${w.steps === 1 ? 'step' : 'steps'} so far`,
-  ].join('\n')
+  const parts = [`⏳ ${fmtElapsed(now - w.start)}`]
+  if (w.steps) parts.push(`${w.steps} ${w.steps === 1 ? 'step' : 'steps'}`)
+  parts.push(clip(w.current ?? 'Thinking…', 60))
+  return parts.join(' · ')
 }
 
 /** Draft body: the status plus what Claude last wrote between steps. */
 function renderDraft(w: Work, now: number): string {
   const lines = [renderStatus(w, now)]
-  if (w.note) lines.push('', `💭 ${clip(w.note, 600)}`)
+  if (w.note) lines.push(`💭 ${clip(w.note, 80)}`)
   return lines.join('\n')
 }
 

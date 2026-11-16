@@ -589,7 +589,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           format: {
             type: 'string',
             enum: ['text', 'markdownv2', 'rich'],
-            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. 'rich' sends a Telegram rich message written in GitHub-flavored Markdown (headings, tables, fenced code with a language, task lists, block quotes, <details> for collapsible parts), up to 32768 characters in one message and no escaping needed; prefer it for long or structured replies. Default: 'text' (plain, no escaping needed).",
+            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. 'rich' sends a Telegram rich message written in GitHub-flavored Markdown (headings, tables, fenced code with a language, task lists, block quotes, <details> for collapsible parts), up to 32768 characters in one message and no escaping needed; prefer it for long or structured replies. Default: 'text' (plain, no escaping needed). Times: write {{time:VALUE}} or {{time:VALUE|FORMAT}} and the user sees that moment in their own time zone (markdownv2 and rich; plain text gets UTC). VALUE is ISO-8601 with a zone (2026-11-16T09:17:00Z), Unix seconds, or now / now+30m / now-2h. FORMAT: t short time, T long time, d short date, D long date, w weekday (combine as wDT), r relative (\"5 minutes ago\"). Default: t near now, dt otherwise. No escaping needed inside the token.",
           },
         },
         required: ['chat_id', 'text'],
@@ -631,7 +631,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           format: {
             type: 'string',
             enum: ['text', 'markdownv2', 'rich'],
-            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. 'rich' sends a Telegram rich message written in GitHub-flavored Markdown (headings, tables, fenced code with a language, task lists, block quotes, <details> for collapsible parts), up to 32768 characters in one message and no escaping needed; prefer it for long or structured replies. Default: 'text' (plain, no escaping needed).",
+            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. 'rich' sends a Telegram rich message written in GitHub-flavored Markdown (headings, tables, fenced code with a language, task lists, block quotes, <details> for collapsible parts), up to 32768 characters in one message and no escaping needed; prefer it for long or structured replies. Default: 'text' (plain, no escaping needed). Times: write {{time:VALUE}} or {{time:VALUE|FORMAT}} and the user sees that moment in their own time zone (markdownv2 and rich; plain text gets UTC). VALUE is ISO-8601 with a zone (2026-11-16T09:17:00Z), Unix seconds, or now / now+30m / now-2h. FORMAT: t short time, T long time, d short date, D long date, w weekday (combine as wDT), r relative (\"5 minutes ago\"). Default: t near now, dt otherwise. No escaping needed inside the token.",
           },
         },
         required: ['chat_id', 'message_id', 'text'],
@@ -780,6 +780,43 @@ function rememberSent(chat: string, ids: number[], text: string): void {
 const findSent = (chat: string, id: number) => loadSent().find(r => r.chat === chat && r.id === id)
 
 
+// LOCAL PATCH: time tokens. Claude writes {{time:VALUE}} or
+// {{time:VALUE|FORMAT}} and the user sees that moment in their own time zone
+// (Bot API 9.5 date_time entity). VALUE is ISO-8601 with a zone, Unix
+// seconds, or now / now+30m / now-2h. FORMAT follows Telegram: r relative,
+// or w?[dD]?[tT]? (weekday, short/long date, short/long time). Default: t
+// within 20 hours of now, dt otherwise. Plain text gets a UTC time instead.
+const TIME_TOKEN = /\\?\{\\?\{time:([^{}\n]{1,60}?)\\?\}\\?\}/g
+const TIME_FORMAT = /^(r|w?[dD]?[tT]?)$/
+
+function parseTime(value: string): number | undefined {
+  const v = value.trim()
+  const rel = /^now(?:([+-])(\d+)([smhd]))?$/.exec(v)
+  if (rel) {
+    const unit = { s: 1, m: 60, h: 3600, d: 86400 }[rel[3] as 's' | 'm' | 'h' | 'd'] ?? 0
+    const delta = rel[1] ? Number(rel[2]) * unit * (rel[1] === '-' ? -1 : 1) : 0
+    return Math.floor(Date.now() / 1000) + delta
+  }
+  if (/^\d{9,11}$/.test(v)) return Number(v)
+  const ms = Date.parse(v)
+  return Number.isNaN(ms) ? undefined : Math.floor(ms / 1000)
+}
+
+function expandTimes(text: string, mode: 'text' | 'markdownv2' | 'rich'): string {
+  return text.replace(TIME_TOKEN, (whole, inner: string) => {
+    const [rawValue, rawFormat] = inner.replace(/\\/g, '').split('|')
+    const unix = parseTime(rawValue ?? '')
+    if (unix == null) return whole
+    const near = Math.abs(unix - Date.now() / 1000) < 20 * 3600
+    const format = rawFormat != null && TIME_FORMAT.test(rawFormat.trim()) ? rawFormat.trim() : near ? 't' : 'dt'
+    const iso = new Date(unix * 1000).toISOString()
+    const label = `${near ? '' : iso.slice(0, 10) + ' '}${iso.slice(11, 16)} UTC`
+    if (mode === 'text') return label
+    const shown = mode === 'markdownv2' ? label.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, m => '\\' + m) : label
+    return `![${shown}](tg://time?unix=${unix}${format ? `&format=${format}` : ''})`
+  })
+}
+
 /** Send a Bot API 10.1 rich message written in GitHub-flavored Markdown. */
 async function sendRich(chat_id: string, markdown: string, replyTo?: number): Promise<{ message_id: number }> {
   return (bot.api.raw as any).sendRichMessage({
@@ -795,11 +832,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
     switch (req.params.name) {
       case 'reply': {
         const chat_id = args.chat_id as string
-        const text = args.text as string
+        const rawText = args.text as string
         const reply_to = args.reply_to != null ? Number(args.reply_to) : undefined
         const files = (args.files as string[] | undefined) ?? []
         const format = (args.format as string | undefined) ?? 'text'
         const parseMode = format === 'markdownv2' ? 'MarkdownV2' as const : undefined
+        const text = expandTimes(rawText, format === 'rich' ? 'text' : format === 'markdownv2' ? 'markdownv2' : 'text')
 
         assertAllowedChat(chat_id)
 
@@ -820,7 +858,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         // to plain text chunks below rather than losing the reply.
         let richError: string | undefined
         if (format === 'rich') {
-          const parts = chunk(text, RICH_LIMIT, 'newline')
+          const parts = chunk(expandTimes(rawText, 'rich'), RICH_LIMIT, 'newline')
           try {
             for (let i = 0; i < parts.length; i++) {
               const shouldReplyTo = reply_to != null && replyMode !== 'off' && (replyMode === 'all' || i === 0)
@@ -879,7 +917,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             : `sent ${sentIds.length} parts (ids: ${sentIds.join(', ')})`
         noteStatusReply(chat_id)
         if (sentIds.length) {
-          rememberSent(chat_id, sentIds, text)
+          rememberSent(chat_id, sentIds, expandTimes(rawText, 'text'))
           void attachQuick(chat_id, sentIds[sentIds.length - 1]!)
         }
         return { content: [{ type: 'text', text: result }] }
@@ -917,7 +955,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const edited = await (bot.api.raw as any).editMessageText({
             chat_id: args.chat_id as string,
             message_id: Number(args.message_id),
-            rich_message: { markdown: args.text as string },
+            rich_message: { markdown: expandTimes(args.text as string, 'rich') },
           })
           const id = typeof edited === 'object' ? edited.message_id : args.message_id
           return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
@@ -925,7 +963,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const edited = await bot.api.editMessageText(
           args.chat_id as string,
           Number(args.message_id),
-          args.text as string,
+          expandTimes(args.text as string, editParseMode ? 'markdownv2' : 'text'),
           ...(editParseMode ? [{ parse_mode: editParseMode }] : []),
         )
         const id = typeof edited === 'object' ? edited.message_id : args.message_id

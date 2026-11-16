@@ -162,6 +162,7 @@ type Slot = {
   sessionId?: string // last Claude session, resumed on the next start
   lastActive: number
   pinned?: boolean // never stopped for being idle (main)
+  closed?: boolean // topic closed in Telegram
 }
 
 type Runtime = {
@@ -629,8 +630,14 @@ async function handleUpdate(u: any): Promise<void> {
   if (!allowedInGroup(chatId, from)) return
   const slot = topicSlot(chatId, thread, title)
   if (msg?.forum_topic_closed) {
+    slot.closed = true
+    dirty = true
     stop(slot, 'topic closed')
     return
+  }
+  if (msg?.forum_topic_reopened && slot.closed) {
+    slot.closed = false
+    dirty = true
   }
   const r = runtime(slot.name)
   if (cq && !alive(r.pid)) {
@@ -670,7 +677,33 @@ async function wake(slot: Slot): Promise<void> {
   await start(slot)
 }
 
+// Telegram does not tell bots when a topic is deleted. Probe stopped topic
+// slots without changing anything: reopening an open topic (or closing a
+// closed one) answers TOPIC_NOT_MODIFIED, a deleted one TOPIC_ID_INVALID.
+async function pruneDeletedTopics(): Promise<void> {
+  for (const s of [...slots.values()]) {
+    if (!s.chat || !s.thread || alive(runtime(s.name).pid)) continue
+    const probe = s.closed ? 'closeForumTopic' : 'reopenForumTopic'
+    try {
+      await api(probe, { chat_id: s.chat, message_thread_id: s.thread })
+      // It did change something: our closed flag was stale. Put it back.
+      if (probe === 'reopenForumTopic') await api('closeForumTopic', { chat_id: s.chat, message_thread_id: s.thread }).catch(() => {})
+      else await api('reopenForumTopic', { chat_id: s.chat, message_thread_id: s.thread }).catch(() => {})
+      s.closed = probe === 'reopenForumTopic'
+      dirty = true
+    } catch (err) {
+      if (!/TOPIC_ID_INVALID|thread not found/i.test(String(err))) continue
+      log(`${s.name}: topic ${s.title ?? s.thread} was deleted, forgetting it`)
+      slots.delete(s.name)
+      rt.delete(s.name)
+      dirty = true
+    }
+  }
+  saveSlots()
+}
+
 async function reportSessions(chatId: string, thread?: number): Promise<void> {
+  await pruneDeletedTopics()
   const cap = capacity()
   const rss = treeRss(running().map(s => runtime(s.name).pid!))
   const lines = [`Sessions (${running().length} running, room for about ${cap.limit}):`, '']
@@ -678,7 +711,7 @@ async function reportSessions(chatId: string, thread?: number): Promise<void> {
   for (const s of sorted) {
     const r = runtime(s.name)
     const on = alive(r.pid)
-    const state = on ? (r.status ?? 'starting') : r.gaveUp ? 'crashed' : r.queue.length ? 'queued' : 'stopped'
+    const state = on ? (r.status ?? 'starting') : r.gaveUp ? 'crashed' : r.queue.length ? 'queued' : s.closed ? 'closed' : 'stopped'
     const ago = Math.round((Date.now() - s.lastActive) / 60_000)
     lines.push(
       `${on ? '🟢' : '⚪️'} ${s.name === 'main' ? 'main (DM)' : s.title ?? s.name} — ${state}` +

@@ -1,8 +1,8 @@
 node_modules/
 .DS_Store
 
-# 运行时状态与密钥：插件把这些放在 ~/.claude/channels/telegram/，
-# 这里再兜底一次，防止误复制进仓库
+# Runtime state and secrets. The plugin keeps these in
+# ~/.claude/channels/telegram/; ignore them here too in case they get copied in.
 .env
 .env.*
 access.json

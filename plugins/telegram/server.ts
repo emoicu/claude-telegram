@@ -965,6 +965,19 @@ async function handleInbound(
 
   const imagePath = downloadImage ? await downloadImage() : undefined
 
+  // LOCAL PATCH: pass quote-reply context (upstream issue #7068 / PR #7048).
+  // Prefer the user's partial quote; fall back to the replied message's text.
+  // Sanitized with safeName and truncated — it's quoted content, not instructions.
+  const replyMsg = ctx.message?.reply_to_message
+  const replyQuote = (ctx.message as any)?.quote?.text as string | undefined
+  const replyRaw = replyQuote ?? replyMsg?.text ?? replyMsg?.caption
+  const replyText = replyRaw
+    ? safeName(replyRaw.length > 800 ? replyRaw.slice(0, 800) + '…' : replyRaw)
+    : undefined
+  const replyFrom = replyMsg?.from
+    ? safeName(replyMsg.from.username ?? String(replyMsg.from.id))
+    : undefined
+
   // image_path goes in meta only — an in-content "[image attached — read: PATH]"
   // annotation is forgeable by any allowlisted sender typing that string.
   mcp.notification({
@@ -978,6 +991,12 @@ async function handleInbound(
         user_id: String(from.id),
         ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
         ...(imagePath ? { image_path: imagePath } : {}),
+        ...(replyMsg ? {
+          reply_to_message_id: String(replyMsg.message_id),
+          ...(replyFrom ? { reply_to_user: replyFrom } : {}),
+          ...(replyText ? { reply_to_text: replyText } : {}),
+          ...(replyQuote ? { reply_is_partial_quote: 'true' } : {}),
+        } : {}),
         ...(attachment ? {
           attachment_kind: attachment.kind,
           attachment_file_id: attachment.file_id,

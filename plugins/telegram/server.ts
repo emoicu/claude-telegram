@@ -55,12 +55,58 @@ if (!TOKEN) {
 const INBOX_DIR = join(STATE_DIR, 'inbox')
 const PID_FILE = join(STATE_DIR, 'bot.pid')
 
+// LOCAL PATCH: only poll Telegram when this session actually loaded us as a
+// channel. The plugin is enabled user-wide, so every Claude Code session on
+// the host (background `claude --bg` sessions, an ad-hoc `claude` over SSH…)
+// spawns this server too. Without this check each of them would SIGTERM the
+// real channel's poller below and steal the bot token.
+//
+// Detection walks up the process tree to the owning Claude Code process and
+// looks for `--channels` / `--dangerously-load-development-channels` naming
+// this plugin. TELEGRAM_CHANNEL_MODE=always|never overrides; if no Claude
+// ancestor is found we fall back to polling (upstream behaviour).
+function detectChannelMode(): { poll: boolean; reason: string } {
+  const override = process.env.TELEGRAM_CHANNEL_MODE
+  if (override === 'always') return { poll: true, reason: 'TELEGRAM_CHANNEL_MODE=always' }
+  if (override === 'never') return { poll: false, reason: 'TELEGRAM_CHANNEL_MODE=never' }
+  let pid = process.ppid
+  for (let depth = 0; depth < 12 && pid > 1; depth++) {
+    let line: string
+    try {
+      line = execFileSync('ps', ['-o', 'ppid=,args=', '-p', String(pid)], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+    } catch {
+      break
+    }
+    const m = /^(\d+)\s+(.*)$/s.exec(line)
+    if (!m) break
+    const args = m[2]
+    const exe = args.split(/\s+/)[0] ?? ''
+    const isClaude = /(^|\/)claude$/.test(exe) || /\/claude\/versions\/[^/\s]+$/.test(exe)
+    if (isClaude) {
+      const hasFlag = /--(channels|dangerously-load-development-channels)\b/.test(args)
+      const namesUs = /\bplugin:telegram@|\bserver:telegram\b/.test(args)
+      return hasFlag && namesUs
+        ? { poll: true, reason: `channel enabled in claude pid=${pid}` }
+        : { poll: false, reason: `claude pid=${pid} did not load telegram as a channel` }
+    }
+    pid = parseInt(m[1], 10)
+  }
+  return { poll: true, reason: 'no Claude Code ancestor found, polling as upstream does' }
+}
+const channelMode = detectChannelMode()
+process.stderr.write(
+  `telegram channel: ${channelMode.poll ? 'polling enabled' : 'polling disabled'} (${channelMode.reason})\n`,
+)
+
 // Telegram allows exactly one getUpdates consumer per token. If a previous
 // session crashed (SIGKILL, terminal closed) its server.ts grandchild can
 // survive as an orphan and hold the slot forever, so every new session sees
 // 409 Conflict. Kill any stale holder before we start polling.
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-try {
+if (channelMode.poll) try {
   const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
   if (stale > 1 && stale !== process.pid) {
     process.kill(stale, 0)
@@ -75,7 +121,7 @@ try {
     }
   }
 } catch {}
-writeFileSync(PID_FILE, String(process.pid))
+if (channelMode.poll) writeFileSync(PID_FILE, String(process.pid))
 
 // Last-resort safety net — without these the process dies silently on any
 // unhandled promise rejection. With them it logs and keeps serving tools.
@@ -1022,7 +1068,7 @@ bot.catch(err => {
 // returned, and polling stopped permanently while the process stayed alive
 // (MCP stdin keeps it running). Outbound tools kept working but the bot was
 // deaf to inbound messages until a full restart.
-void (async () => {
+if (channelMode.poll) void (async () => {
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.start({

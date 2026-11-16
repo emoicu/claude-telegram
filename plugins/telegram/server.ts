@@ -787,8 +787,12 @@ bot.command('status', async ctx => {
 // commands directly and runs `<helper> <command> [arg]` instead: no model
 // turn is spent and they work even while Claude is busy. The helper is
 // responsible for acting on the session and reporting back to the chat.
+// TELEGRAM_COMMAND_HELPER=builtin uses the bundled helpers/tmux-session-helper.ts
+// (needs Claude Code running in tmux). The helper gets the Claude pid, chat id,
+// bot token and state dir through the environment.
 // Without the env var these commands are forwarded to Claude as before.
 const COMMAND_HELPER = process.env.TELEGRAM_COMMAND_HELPER || undefined
+const BUILTIN_HELPER = join(import.meta.dir, 'helpers', 'tmux-session-helper.ts')
 const HELPER_COMMANDS = [
   { command: 'new', description: 'Start a fresh conversation' },
   { command: 'usage', description: 'Show plan usage' },
@@ -814,7 +818,17 @@ if (COMMAND_HELPER && channelMode.poll) {
       const chatId = String(ctx.chat!.id)
       const msgId = ctx.message?.message_id
       noteStatusChat(chatId)
-      execFile(COMMAND_HELPER, arg ? [command, arg] : [command], { timeout: 30_000 }, err => {
+      const helperArgs = arg ? [command, arg] : [command]
+      const [file, argv] = COMMAND_HELPER === 'builtin'
+        ? [process.execPath, [BUILTIN_HELPER, ...helperArgs]]
+        : [COMMAND_HELPER, helperArgs]
+      const env = {
+        ...process.env,
+        TELEGRAM_HELPER_CLAUDE_PID: String(channelMode.claudePid ?? ''),
+        TELEGRAM_HELPER_CHAT_ID: chatId,
+        TELEGRAM_STATE_DIR: STATE_DIR,
+      }
+      execFile(file, argv, { timeout: 30_000, env }, err => {
         if (!err) return
         process.stderr.write(`telegram channel: command helper failed for /${command}: ${err}\n`)
         void bot.api.sendMessage(chatId, `/${command} failed: ${err.message.split('\n')[0]}`).catch(() => {})

@@ -224,6 +224,7 @@ function topicSlot(chat: string, thread: number, title?: string): Slot {
     log(`new topic slot ${name}${title ? ` "${title}"` : ''} → ${s.cwd}`)
   } else if (title && s.title !== title) {
     s.title = title
+    renameWindow(s)
     dirty = true
   }
   return s
@@ -339,15 +340,39 @@ function capacity(): { ok: boolean; why: string; limit: number } {
 
 const TMUX_SESSION = tmuxSessionName()
 
-function windowPid(name: string): number | undefined {
+/**
+ * The tmux window of a slot. Windows are tagged with the user option @slot,
+ * so their visible names can carry the topic title (and change with it).
+ * Untagged windows named exactly like the slot are from older routers.
+ */
+function windowOf(name: string): { id: string; pid: number } | undefined {
   try {
-    const out = tmux('list-windows', '-t', TMUX_SESSION, '-F', '#{window_name} #{pane_pid}')
+    const out = tmux('list-windows', '-t', TMUX_SESSION, '-F', '#{window_id}\t#{@slot}\t#{window_name}\t#{pane_pid}')
     for (const line of out.split('\n')) {
-      const [w, pid] = line.split(' ')
-      if (w === name) return Number(pid)
+      const [id, tag, wname, pid] = line.split('\t')
+      if (id && (tag === name || (!tag && wname === name))) return { id, pid: Number(pid) }
     }
   } catch {}
   return undefined
+}
+const windowPid = (name: string) => windowOf(name)?.pid
+const windowTarget = (name: string) => windowOf(name)?.id ?? `${TMUX_SESSION}:${name}`
+
+/** Visible window name: "t11-test" for topics, "main" for the DM session. */
+function displayName(slot: Slot): string {
+  if (!slot.title) return slot.name
+  // tmux targets use ":" and "." as separators; keep names short.
+  const title = slot.title.replace(/[\s:.]+/g, '-').replace(/^-+|-+$/g, '')
+  return title ? `${slot.name}-${[...title].slice(0, 20).join('')}` : slot.name
+}
+
+function renameWindow(slot: Slot): void {
+  const w = windowOf(slot.name)
+  if (!w) return
+  try {
+    tmux('rename-window', '-t', w.id, displayName(slot))
+    tmux('set-option', '-w', '-t', w.id, '@slot', slot.name)
+  } catch {}
 }
 
 /** Environment for a session: our TELEGRAM_* settings plus its slot binding. */
@@ -371,19 +396,20 @@ function sessionEnv(slot: Slot): Record<string, string> {
 async function start(slot: Slot): Promise<void> {
   const r = runtime(slot.name)
   if (alive(r.pid)) return
-  const stale = windowPid(slot.name)
+  const stale = windowOf(slot.name)
   if (stale) {
     try {
-      tmux('kill-window', '-t', `${TMUX_SESSION}:${slot.name}`)
+      tmux('kill-window', '-t', stale.id)
     } catch {}
   }
   const resume = validSession(slot.sessionId) ? ['--resume', slot.sessionId!] : []
   if (slot.sessionId && !resume.length) log(`${slot.name}: session ${slot.sessionId} is gone, starting fresh`)
-  const args = ['new-window', '-d', '-t', `${TMUX_SESSION}:`, '-n', slot.name, '-c', existsSync(slot.cwd) ? slot.cwd : MAIN_CWD]
+  const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `${TMUX_SESSION}:`, '-n', displayName(slot), '-c', existsSync(slot.cwd) ? slot.cwd : MAIN_CWD]
   for (const [k, v] of Object.entries(sessionEnv(slot))) args.push('-e', `${k}=${v}`)
   args.push(...CLAUDE_CMD, ...resume)
   try {
-    tmux(...args)
+    const id = tmux(...args).trim()
+    tmux('set-option', '-w', '-t', id, '@slot', slot.name)
   } catch (err) {
     log(`${slot.name}: tmux new-window failed: ${err}`)
     return
@@ -410,13 +436,13 @@ function confirmDialog(slot: Slot, r: Runtime): void {
   if (r.dialogDone || Date.now() - r.startedAt > DIALOG_WINDOW_MS) return
   let screen = ''
   try {
-    screen = tmux('capture-pane', '-p', '-t', `${TMUX_SESSION}:${slot.name}`)
+    screen = tmux('capture-pane', '-p', '-t', windowTarget(slot.name))
   } catch {
     return
   }
   if (screen.includes('Loading development channels') && screen.includes('I am using this for local development')) {
     try {
-      tmux('send-keys', '-t', `${TMUX_SESSION}:${slot.name}`, 'Enter')
+      tmux('send-keys', '-t', windowTarget(slot.name), 'Enter')
       r.dialogDone = true
       log(`${slot.name}: confirmed the development-channels dialog`)
     } catch {}
@@ -660,6 +686,7 @@ for (const slot of slots.values()) {
   const pid = windowPid(slot.name)
   if (pid && alive(pid)) {
     Object.assign(runtime(slot.name), { pid, startedAt: Date.now() - QUICK_EXIT_MS, dialogDone: true })
+    renameWindow(slot)
     log(`${slot.name}: adopted running session pid ${pid}`)
   }
 }

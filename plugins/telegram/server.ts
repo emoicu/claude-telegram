@@ -55,6 +55,31 @@ if (!TOKEN) {
 const INBOX_DIR = join(STATE_DIR, 'inbox')
 const PID_FILE = join(STATE_DIR, 'bot.pid')
 
+// LOCAL PATCH: downloaded photos and files pile up in the inbox. Delete those
+// older than TELEGRAM_INBOX_KEEP_DAYS (default 7, 0 keeps everything), at
+// startup and every six hours.
+const INBOX_KEEP_DAYS = Number(process.env.TELEGRAM_INBOX_KEEP_DAYS ?? 7)
+
+function pruneInbox(): void {
+  if (!(INBOX_KEEP_DAYS > 0)) return
+  const cutoff = Date.now() - INBOX_KEEP_DAYS * 86_400_000
+  let names: string[]
+  try {
+    names = readdirSync(INBOX_DIR)
+  } catch {
+    return
+  }
+  for (const name of names) {
+    const p = join(INBOX_DIR, name)
+    try {
+      const st = statSync(p)
+      if (st.isFile() && st.mtimeMs < cutoff) rmSync(p)
+    } catch {}
+  }
+}
+pruneInbox()
+setInterval(pruneInbox, 6 * 3600_000).unref()
+
 // LOCAL PATCH: only poll Telegram when this session actually loaded us as a
 // channel. The plugin is enabled user-wide, so every Claude Code session on
 // the host (background `claude --bg` sessions, an ad-hoc `claude` over SSH…)

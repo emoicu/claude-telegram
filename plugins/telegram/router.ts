@@ -28,9 +28,9 @@
  *   TELEGRAM_ROUTER_SESSION_MB  memory per session until one is measured (default 500)
  */
 import { execFileSync } from 'child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { cpus, homedir, loadavg } from 'os'
-import { join } from 'path'
+import { basename, join } from 'path'
 import type { Socket } from 'bun'
 
 // ---- config ---------------------------------------------------------------
@@ -57,6 +57,8 @@ const TICK_MS = 3000
 const QUICK_EXIT_MS = 60_000 // a session that dies sooner than this "crashed quickly"
 const MAX_QUICK_EXITS = 3 // then stop restarting it and tell the user
 const DIALOG_WINDOW_MS = 120_000 // look for the development-channels dialog this long
+const UPDATE_CHECK_MS = 10 * 60_000 // how often to look for a newer Claude Code on disk
+const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this much quiet
 
 function tmuxSessionName(): string {
   if (process.env.TELEGRAM_ROUTER_TMUX) return process.env.TELEGRAM_ROUTER_TMUX
@@ -166,6 +168,8 @@ type Runtime = {
   stopping?: boolean
   dialogDone?: boolean
   status?: string
+  version?: string // Claude Code version the session runs
+  updateTo?: string // stopped to pick up this version
   rssMB?: number
   quickExits: number
   gaveUp?: boolean
@@ -639,6 +643,7 @@ async function tick(): Promise<void> {
         if (slot.name === 'main') writeFileSync(join(STATE_DIR, 'last-session'), info.sessionId + '\n')
       }
       r.status = info?.status
+      r.version = (info as { version?: string } | undefined)?.version ?? r.version
       if (r.status && r.status !== 'idle') slot.lastActive = Date.now()
       confirmDialog(slot, r)
       if (!slot.pinned && r.status === 'idle' && !r.queue.length && Date.now() - slot.lastActive > IDLE_MS && !r.stopping) {
@@ -656,6 +661,10 @@ async function tick(): Promise<void> {
       if (planned) {
         log(`${slot.name}: stopped`)
         r.quickExits = 0
+        if (r.updateTo && slot.pinned) {
+          void notify(slot, `🔄 Claude Code updated to ${r.updateTo}. Restarting this session to use it; it resumes the same conversation in a few seconds.`)
+        }
+        r.updateTo = undefined
       } else {
         r.quickExits = ran < QUICK_EXIT_MS ? r.quickExits + 1 : 0
         log(`${slot.name}: exited after ${Math.round(ran / 1000)}s (quick exits in a row: ${r.quickExits})`)
@@ -675,7 +684,56 @@ async function tick(): Promise<void> {
     // Restart main always, and any slot that has messages waiting.
     if (slot.pinned || r.queue.length) await wake(slot)
   }
+  checkForUpdate()
   saveSlots()
+}
+
+// ---- Claude Code updates ---------------------------------------------------
+
+/** Version of the Claude Code that new sessions would run. */
+function installedVersion(): string | undefined {
+  try {
+    // The native installer links `claude` to …/versions/<version>.
+    const name = basename(realpathSync(CLAUDE_CMD[0]!))
+    if (/^\d+\.\d+\.\d+/.test(name)) return name
+  } catch {}
+  try {
+    const out = execFileSync(CLAUDE_CMD[0]!, ['--version'], { encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'ignore'] })
+    return /(\d+\.\d+\.\d+)/.exec(out)?.[1]
+  } catch {}
+  return undefined
+}
+
+function isNewer(a: string, b: string): boolean {
+  const pa = a.split(/[.-]/).map(Number)
+  const pb = b.split(/[.-]/).map(Number)
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0)
+  }
+  return false
+}
+
+let lastUpdateCheck = Date.now()
+
+/**
+ * Claude Code updates itself on disk, but a running session keeps the old
+ * version until it restarts. Topic sessions restart often anyway; this
+ * restarts any outdated session once it has been quiet for a while. main is
+ * brought back right away (resuming its conversation), topics on their next
+ * message.
+ */
+function checkForUpdate(): void {
+  if (Date.now() - lastUpdateCheck < UPDATE_CHECK_MS) return
+  lastUpdateCheck = Date.now()
+  const latest = installedVersion()
+  if (!latest) return
+  for (const slot of running()) {
+    const r = runtime(slot.name)
+    if (!r.version || !isNewer(latest, r.version) || r.stopping) continue
+    if (r.status !== 'idle' || r.queue.length || Date.now() - slot.lastActive < UPDATE_IDLE_MS) continue
+    r.updateTo = latest
+    stop(slot, `Claude Code ${r.version} → ${latest}`)
+  }
 }
 
 // ---- main -----------------------------------------------------------------

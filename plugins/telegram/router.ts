@@ -588,7 +588,7 @@ const ACTIONABLE = ['text', 'photo', 'document', 'voice', 'audio', 'video', 'vid
 async function handleUpdate(u: any): Promise<void> {
   const msg = u.message ?? u.edited_message
   const cq = u.callback_query
-  const chat = msg?.chat ?? cq?.message?.chat
+  const chat = msg?.chat ?? cq?.message?.chat ?? u.stopped_message_generation?.chat
   if (!chat) return
   const from = String((msg ?? cq)?.from?.id ?? '')
 
@@ -863,7 +863,7 @@ process.on('SIGINT', () => process.exit(0))
       const updates: any[] = await api('getUpdates', {
         offset,
         timeout: 30,
-        allowed_updates: ['message', 'edited_message', 'callback_query'],
+        allowed_updates: ['message', 'edited_message', 'callback_query', 'stopped_message_generation'],
       })
       attempt = 0
       for (const u of updates) {

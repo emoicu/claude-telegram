@@ -588,8 +588,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           format: {
             type: 'string',
-            enum: ['text', 'markdownv2'],
-            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. Default: 'text' (plain, no escaping needed).",
+            enum: ['text', 'markdownv2', 'rich'],
+            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. 'rich' sends a Telegram rich message written in GitHub-flavored Markdown (headings, tables, fenced code with a language, task lists, block quotes, <details> for collapsible parts), up to 32768 characters in one message and no escaping needed; prefer it for long or structured replies. Default: 'text' (plain, no escaping needed).",
           },
         },
         required: ['chat_id', 'text'],
@@ -630,8 +630,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string' },
           format: {
             type: 'string',
-            enum: ['text', 'markdownv2'],
-            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. Default: 'text' (plain, no escaping needed).",
+            enum: ['text', 'markdownv2', 'rich'],
+            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. 'rich' sends a Telegram rich message written in GitHub-flavored Markdown (headings, tables, fenced code with a language, task lists, block quotes, <details> for collapsible parts), up to 32768 characters in one message and no escaping needed; prefer it for long or structured replies. Default: 'text' (plain, no escaping needed).",
           },
         },
         required: ['chat_id', 'message_id', 'text'],
@@ -639,6 +639,17 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
   ],
 }))
+
+const RICH_LIMIT = 32768
+
+/** Send a Bot API 10.1 rich message written in GitHub-flavored Markdown. */
+async function sendRich(chat_id: string, markdown: string, replyTo?: number): Promise<{ message_id: number }> {
+  return (bot.api.raw as any).sendRichMessage({
+    chat_id,
+    rich_message: { markdown },
+    ...(replyTo != null ? { reply_parameters: { message_id: replyTo } } : {}),
+  })
+}
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const args = (req.params.arguments ?? {}) as Record<string, unknown>
@@ -663,11 +674,30 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
 
         const access = loadAccess()
+        const replyMode = access.replyToMode ?? 'first'
+        const sentIds: number[] = []
+
+        // LOCAL PATCH: rich messages (Bot API 10.1) take GitHub-flavored
+        // Markdown up to 32768 characters. If Telegram rejects one, fall back
+        // to plain text chunks below rather than losing the reply.
+        let richError: string | undefined
+        if (format === 'rich') {
+          const parts = chunk(text, RICH_LIMIT, 'newline')
+          try {
+            for (let i = 0; i < parts.length; i++) {
+              const shouldReplyTo = reply_to != null && replyMode !== 'off' && (replyMode === 'all' || i === 0)
+              const sent = await sendRich(chat_id, parts[i]!, shouldReplyTo ? reply_to : undefined)
+              sentIds.push(sent.message_id)
+            }
+          } catch (err) {
+            richError = err instanceof Error ? err.message : String(err)
+            process.stderr.write(`telegram channel: rich reply failed, sending plain text: ${richError}\n`)
+          }
+        }
+
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
         const mode = access.chunkMode ?? 'length'
-        const replyMode = access.replyToMode ?? 'first'
-        const chunks = chunk(text, limit, mode)
-        const sentIds: number[] = []
+        const chunks = format === 'rich' && !richError ? [] : chunk(text, limit, mode)
 
         try {
           for (let i = 0; i < chunks.length; i++) {
@@ -741,6 +771,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         assertAllowedChat(args.chat_id as string)
         const editFormat = (args.format as string | undefined) ?? 'text'
         const editParseMode = editFormat === 'markdownv2' ? 'MarkdownV2' as const : undefined
+        if (editFormat === 'rich') {
+          const edited = await (bot.api.raw as any).editMessageText({
+            chat_id: args.chat_id as string,
+            message_id: Number(args.message_id),
+            rich_message: { markdown: args.text as string },
+          })
+          const id = typeof edited === 'object' ? edited.message_id : args.message_id
+          return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
+        }
         const edited = await bot.api.editMessageText(
           args.chat_id as string,
           Number(args.message_id),
@@ -1475,6 +1514,14 @@ const STATUS_EDIT_MIN_MS = 4000 // stay well under Telegram's edit rate limits
 const STATUS_IDLE_TICKS = 2 // debounce: idle must persist this many polls
 const STATUS_MOVE_AFTER_REPLY_MS = 5000 // re-post below a reply if work continues
 const TYPING_EVERY_MS = 4500
+// LOCAL PATCH: in direct messages the status is a streamed draft
+// (sendMessageDraft, Bot API 9.3+) instead of a message: it shows like the
+// bot typing a reply, refreshes in place, and carries Telegram's own stop
+// button. A draft lives ~30s unless refreshed and vanishes when the bot sends
+// a message. TELEGRAM_STATUS_STYLE=message keeps the old status message.
+const STATUS_DRAFTS = process.env.TELEGRAM_STATUS_STYLE !== 'message'
+const DRAFT_SHOW_AFTER_MS = 3000
+const DRAFT_EVERY_MS = 3000
 const TRANSCRIPT_TAIL_BYTES = 512 * 1024
 
 type Work = {
@@ -1490,6 +1537,10 @@ type Work = {
   lastTyping: number
   replyAt?: number
   idleTicks: number
+  note?: string // latest text Claude wrote between steps
+  draftId?: number // set while the status is a draft
+  draftFailed?: boolean // drafts unsupported here: use a message
+  stopped?: boolean // the user pressed Stop for this turn
 }
 
 // Chat that receives status updates: the last allowlisted chat that messaged
@@ -1581,7 +1632,7 @@ function scanSteps(w: Work, path: string): void {
   const lines = tail.split('\n')
   for (let i = 1; i < lines.length; i++) { // line 0 may be cut in half
     const line = lines[i]
-    if (!line || !line.includes('"tool_use"')) continue
+    if (!line || !(line.includes('"tool_use"') || line.includes('"type":"text"'))) continue
     let entry: any
     try {
       entry = JSON.parse(line)
@@ -1591,6 +1642,10 @@ function scanSteps(w: Work, path: string): void {
     if (entry?.type !== 'assistant' || typeof entry.timestamp !== 'string') continue
     if (entry.timestamp < w.sinceIso) continue
     for (const c of entry.message?.content ?? []) {
+      if (c?.type === 'text' && typeof c.text === 'string' && c.text.trim()) {
+        w.note = c.text
+        continue
+      }
       if (c?.type !== 'tool_use' || typeof c.id !== 'string' || w.seen.has(c.id)) continue
       w.seen.add(c.id)
       w.steps++
@@ -1610,6 +1665,38 @@ function renderStatus(w: Work, now: number): string {
     `🔧 ${w.current ?? 'Thinking'}`,
     `📝 ${w.steps} ${w.steps === 1 ? 'step' : 'steps'} so far`,
   ].join('\n')
+}
+
+/** Draft body: the status plus what Claude last wrote between steps. */
+function renderDraft(w: Work, now: number): string {
+  const lines = [renderStatus(w, now)]
+  if (w.note) lines.push('', `💭 ${clip(w.note, 600)}`)
+  return lines.join('\n')
+}
+
+const stopKeyboard = () => new InlineKeyboard().text('⏹ Stop', 'stop:run')
+
+const isPrivateChat = (chat: string) => !chat.startsWith('-')
+
+/**
+ * Interrupt the owning Claude session by pressing Escape in its tmux pane,
+ * as a user at the terminal would. Returns why it could not, if it could not.
+ */
+function interruptClaude(): string | undefined {
+  let pane: string | undefined
+  try {
+    const info = JSON.parse(readFileSync(join(CLAUDE_DIR, 'sessions', `${channelMode.claudePid}.json`), 'utf8'))
+    if (info.status !== 'busy') return 'Claude is not working on anything right now.'
+    pane = /(%\d+)$/.exec(String(info.tmux ?? ''))?.[1]
+  } catch {}
+  if (!pane) return 'Cannot stop: this Claude session is not running inside tmux.'
+  try {
+    execFileSync('tmux', ['send-keys', '-t', pane, 'Escape'], { stdio: 'ignore' })
+  } catch (err) {
+    return `Cannot stop: ${err instanceof Error ? err.message : err}`
+  }
+  if (work) work.stopped = true
+  return undefined
 }
 
 // The status message is scaffolding: once the turn ends it is deleted so the
@@ -1648,13 +1735,33 @@ async function statusTick(): Promise<void> {
   const w = work
   w.idleTicks = 0
 
-  if (now - w.lastTyping >= TYPING_EVERY_MS) {
+  const useDraft = STATUS_DRAFTS && !w.draftFailed && isPrivateChat(w.chat)
+
+  if (now - w.lastTyping >= TYPING_EVERY_MS && !(useDraft && w.draftId != null)) {
     w.lastTyping = now
     void bot.api.sendChatAction(w.chat, 'typing').catch(() => {})
   }
 
   const path = session?.sessionId ? findTranscript(session.sessionId) : undefined
   if (path) scanSteps(w, path)
+
+  if (useDraft) {
+    if (w.stopped || now - w.start < DRAFT_SHOW_AFTER_MS || now - w.lastEdit < DRAFT_EVERY_MS) return
+    w.draftId ??= 1 + Math.floor(Math.random() * 2_000_000_000)
+    w.lastEdit = now
+    try {
+      await (bot.api.raw as any).sendMessageDraft({
+        chat_id: w.chat,
+        draft_id: w.draftId,
+        text: renderDraft(w, now),
+        can_stop: true,
+      })
+    } catch (err) {
+      w.draftFailed = true
+      process.stderr.write(`telegram channel: draft failed, using a status message: ${err}\n`)
+    }
+    return
+  }
 
   if (now - w.start < STATUS_SHOW_AFTER_MS) return
 
@@ -1671,7 +1778,7 @@ async function statusTick(): Promise<void> {
   if (w.msgId == null) {
     if (now < w.lastEdit) return // backing off after a failed send
     try {
-      const sent = await bot.api.sendMessage(w.chat, text, { disable_notification: true })
+      const sent = await bot.api.sendMessage(w.chat, text, { disable_notification: true, reply_markup: stopKeyboard() })
       w.msgId = sent.message_id
       w.lastText = text
       w.lastEdit = now
@@ -1684,7 +1791,7 @@ async function statusTick(): Promise<void> {
   if (text !== w.lastText && now - w.lastEdit >= STATUS_EDIT_MIN_MS) {
     w.lastEdit = now
     try {
-      await bot.api.editMessageText(w.chat, w.msgId, text)
+      await bot.api.editMessageText(w.chat, w.msgId, text, w.stopped ? {} : { reply_markup: stopKeyboard() })
       w.lastText = text
     } catch (err) {
       w.lastEdit = now + 10_000
@@ -1705,6 +1812,31 @@ if (STATUS_ENABLED) {
   }, STATUS_POLL_MS).unref()
 }
 
+// LOCAL PATCH: ⏹ Stop on the status message interrupts the session.
+bot.callbackQuery('stop:run', async ctx => {
+  const gated = dmCommandGate(ctx)
+  if (!gated || !gated.access.allowFrom.includes(gated.senderId)) {
+    await ctx.answerCallbackQuery({ text: 'Not authorized.' }).catch(() => {})
+    return
+  }
+  const problem = interruptClaude()
+  await ctx.answerCallbackQuery({ text: problem ?? 'Stopping…' }).catch(() => {})
+  if (!problem) await ctx.editMessageText('⏹ Stopped by you.').catch(() => {})
+})
+
+// LOCAL PATCH: the stop button Telegram shows on a draft (can_stop) arrives
+// as a stopped_message_generation update. It names no user, only the chat,
+// so only allowlisted private chats may use it.
+bot.use(async (ctx, next) => {
+  const stop = (ctx.update as { stopped_message_generation?: { chat?: { id: number; type?: string } } })
+    .stopped_message_generation
+  if (!stop) return next()
+  const chat = String(stop.chat?.id ?? '')
+  if (stop.chat?.type !== 'private' || !loadAccess().allowFrom.includes(chat)) return
+  const problem = interruptClaude()
+  await bot.api.sendMessage(chat, problem ?? '⏹ Stopped.', { disable_notification: true }).catch(() => {})
+})
+
 // Without this, any throw in a message handler stops polling permanently
 // (grammy's default error handler calls bot.stop() and rethrows).
 bot.catch(err => {
@@ -1720,6 +1852,7 @@ if (channelMode.poll && !routed) void (async () => {
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.start({
+        allowed_updates: ['message', 'edited_message', 'callback_query', 'stopped_message_generation'] as any,
         onStart: info => {
           attempt = 0
           botUsername = info.username

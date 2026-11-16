@@ -669,9 +669,9 @@ const DEFAULT_LABELS: Record<string, string> = {
 }
 // Shown first under the latest reply; the rest sit behind "⋯".
 const QUICK_FIRST = ['👍', '👎', '🤔', '🔥']
-// dm (default): quick buttons under replies in direct messages; all: also in
-// groups; off: none.
-const QUICK_BUTTONS = process.env.TELEGRAM_QUICK_BUTTONS ?? 'dm'
+// off (default): no buttons, reactions only; dm: quick buttons under the
+// latest reply in direct messages; all: also in groups.
+const QUICK_BUTTONS = process.env.TELEGRAM_QUICK_BUTTONS ?? 'off'
 
 type Shortcut = { meaning: string; label: string }
 

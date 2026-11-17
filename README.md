@@ -1,13 +1,60 @@
+<div align="center">
+
 # claude-telegram
 
-A personally maintained fork of the official Claude Code Telegram channel plugin.
+**Drive Claude Code from Telegram: chat with your sessions, watch them work, and steer them from your phone.**
 
-- Upstream: `external_plugins/telegram` in [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)
-- Based on: upstream plugin v0.0.7 (commit `b5b01ac`)
-- Upstream check: `scripts/check-upstream.sh` lists upstream changes to the plugin since that base (the last one, `1e96c6b` of 2026-08-13, is already included). Every local change is listed under [Changes from upstream](#changes-from-upstream) and marked `LOCAL PATCH` in the code.
-- License: Apache-2.0, see [LICENSE](LICENSE)
+[![test](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml)
+[![version](https://img.shields.io/badge/version-0.0.7--emoicu.42-blue)](plugins/telegram/.claude-plugin/plugin.json)
+[![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-channel%20plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
+[![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
 
-## Install
+[Features](#features) · [Quick start](#quick-start) · [Usage](#usage) · [Multi-session router](#multi-session-router) · [Configuration](#configuration) · [Changes from upstream](#changes-from-upstream)
+
+</div>
+
+---
+
+A personally maintained fork of the official [Claude Code Telegram channel plugin](https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/telegram). The upstream plugin forwards your messages to Claude and lets Claude reply. This fork turns it into a full remote control: live status, a Stop button, progress checklists, questions and permission prompts as buttons, rich formatting, and one bot that drives many sessions, one per forum topic.
+
+## Features
+
+**💬 Conversation**
+- Send text, photos, files and voice messages; get back text, photos and files, with several photos grouped into one album
+- Rich replies in GitHub-flavored Markdown: headings, tables, code blocks, task lists, collapsible sections (up to 32k characters)
+- Quote-reply context: Claude sees which message you replied to or quoted
+- Times rendered in each reader's own time zone
+
+**👀 Live work status**
+- Reactions on your message track it: 👀 received → ✍ working → 👍 done
+- For longer turns, a status line (elapsed time · step · current action) with a **Stop** button
+- Progress checklists that update in place instead of flooding the chat, with a 🎉 effect when done
+
+**🕹️ Control from your phone**
+- `AskUserQuestion` prompts arrive as buttons; permission prompts as **Allow / Deny**
+- Reaction shortcuts: 👍 go ahead, 👎 try another way, 🤔 explain simpler, 🔥 just do it, 🙏 pause…
+- Session commands without touching the terminal: `/new`, `/model`, `/effort`, `/usage`, `/session`
+- A notice when the terminal is waiting for someone
+
+**🗂️ Many sessions, one bot**
+- Direct messages go to an always-on main session
+- Each topic of a forum group is its own Claude Code session, started on demand and resumed later
+- Idle sessions are stopped, new ones are capped by free memory and CPU
+- Sessions and the router restart themselves when Claude Code or the plugin is updated
+
+**🔒 Safe by default**
+- Pairing and allowlists from upstream; only approved users reach Claude
+- Polls only in the session that loaded it as a channel, so other sessions never steal the bot
+- Long polling: no public port, no webhook, no domain needed
+
+## Quick start
+
+**Requirements:** [Claude Code](https://docs.claude.com/en/docs/claude-code), [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`), and a Telegram account.
+
+**1. Create a bot.** Message [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the token it gives you.
+
+**2. Install the plugin** (inside a `claude` session):
 
 ```
 /plugin marketplace add emoicu/claude-telegram
@@ -15,15 +62,122 @@ A personally maintained fork of the official Claude Code Telegram channel plugin
 /plugin disable telegram@claude-plugins-official
 ```
 
-This fork is not on the channels allowlist, so start Claude Code with the development flag instead of `--channels`:
+**3. Save the token:**
 
 ```
+/telegram:configure 123456789:AAHfiqksKZ8...
+```
+
+**4. Restart Claude Code with the channel loaded.** This fork is not on the channels allowlist, so use the development flag (Claude Code asks for confirmation on every start):
+
+```sh
 claude --dangerously-load-development-channels plugin:telegram@emoicu-plugins
 ```
 
-Claude Code shows a confirmation dialog on every start when this flag is used.
+**5. Pair.** DM your bot; it answers with a 6-character code. In Claude Code:
+
+```
+/telegram:access pair <code>
+/telegram:access policy allowlist
+```
+
+That's it: your next message reaches Claude. For groups and multi-user setups, see [ACCESS.md](plugins/telegram/ACCESS.md).
+
+## Usage
+
+Send messages, photos or files to the bot as you would to a person. Reply to a message to point at it.
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `/help` | Guide to everything this install supports |
+| `/session` | Model, effort, context size, cost and versions of the current session |
+| `/new` | Start a fresh conversation |
+| `/model [name]` | Switch model; without a name, shows buttons |
+| `/effort [level]` | Change thinking effort; without a level, shows buttons |
+| `/usage` | Plan usage |
+| `/sessions` | All running sessions and their memory (router mode) |
+| `/status` | Pairing status |
+
+`/new`, `/model`, `/effort` and `/usage` need a [command helper](#configuration); the bundled one works when Claude Code runs inside tmux.
+
+### Reaction shortcuts
+
+React to one of the bot's messages to send Claude an instruction about it:
+
+| | | | |
+| --- | --- | --- | --- |
+| 👍 go ahead | 👌 take your recommendation | 👎 try another approach | 🤔 explain more simply |
+| 👀 more detail | ✍ write it down | ❤ remember this preference | 🔥 do it without asking |
+| 🙏 pause (interrupts the turn) | 🎉 wrap up | | |
+
+Customise them in `reactions.json` in the state directory.
+
+## Multi-session router
+
+`router.ts` lets one bot drive many sessions. Turn on topics in a Telegram group, add the bot as an admin so it sees every message, allow the group with `/telegram:access group add <id>`, and run the router inside tmux:
+
+```sh
+tmux new-session -s claude 'bun ~/.claude/plugins/cache/emoicu-plugins/telegram/<version>/router.ts'
+```
+
+- Direct messages → the `main` session, always running
+- Each forum topic → its own session in a tmux window, resuming its previous conversation
+- A topic named like a folder in `TELEGRAM_ROUTER_PROJECTS` works in that folder
+- Closing a topic stops its session; `/sessions` lists them all
+
+Run it from a loop with `TELEGRAM_ROUTER_SELF_UPDATE=1` and it restarts from the newest installed copy after `claude plugin update`. All settings are documented in the header of [`router.ts`](plugins/telegram/router.ts).
+
+## Configuration
+
+Everything is optional; set variables in `~/.claude/channels/telegram/.env` or the environment.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | — | Bot token (written by `/telegram:configure`) |
+| `TELEGRAM_STATE_DIR` | `~/.claude/channels/telegram` | State directory; use one per bot |
+| `TELEGRAM_COMMAND_HELPER` | off | `builtin` or a path; enables `/new`, `/model`, `/effort`, `/usage` |
+| `TELEGRAM_STATUS` | on | `off` disables live status and Stop |
+| `TELEGRAM_STATUS_STYLE` | draft in DMs | `message` uses a status message everywhere |
+| `TELEGRAM_STATUS_AFTER_SEC` | 30 | Delay before the status line appears |
+| `TELEGRAM_REACTION_STATUS` | on | `off` falls back to a static acknowledgement reaction |
+| `TELEGRAM_QUICK_BUTTONS` | off | `dm` or `all`: shortcut buttons under the latest reply |
+| `TELEGRAM_ASK` | on | `off` keeps `AskUserQuestion` in the terminal |
+| `TELEGRAM_NOTIFY` | on | `off` disables the terminal-prompt notice |
+| `TELEGRAM_CONTEXT_WINDOW` | — | Context size in tokens, to show usage as a percentage |
+| `TELEGRAM_INBOX_KEEP_DAYS` | 30 | Delete downloaded files older than this (`0` keeps all) |
+| `TELEGRAM_CHANNEL_MODE` | auto | `always` / `never` override channel-only polling |
+
+Put a `help.md` in the state directory to replace the `/help` text, for example with a translation.
+
+## How it works
+
+```
+Telegram ──long polling──▶ router.ts ──unix socket──▶ server.ts (MCP) ──▶ Claude Code session
+   ▲                           │                          │
+   └──────── Bot API ◀─────────┴──────────────────────────┘
+```
+
+Without the router, `server.ts` polls Telegram itself for a single session. With it, the router is the only poller and hands each update to the session that owns the chat or topic. Replies always go straight to the Bot API.
+
+## Development
+
+```sh
+cd plugins/telegram
+bun install
+bun test lib/
+bun build server.ts --target=bun --outdir /tmp/build   # syntax check
+```
+
+Pure helpers live in `plugins/telegram/lib/` with tests next to them; CI runs the tests on every push. `scripts/check-upstream.sh` lists upstream changes since the fork base. See [CLAUDE.md](CLAUDE.md) for repository conventions.
 
 ## Changes from upstream
+
+Based on upstream plugin v0.0.7 (commit `b5b01ac`); the latest upstream change to the plugin, `1e96c6b` of 2026-08-13, is included. The first commit is the unmodified upstream code, and every local change is marked `LOCAL PATCH` in the code.
+
+<details>
+<summary>Full list of changes</summary>
 
 - **Quote-reply context**: inbound messages carry `reply_to_message_id`, `reply_to_user` and `reply_to_text` when the user replies to or quotes a message.
 - **Channel-only polling**: the plugin connects to Telegram only when its Claude Code process loaded it as a channel. Other sessions on the same host (for example `claude --bg`) no longer take over the bot. Override with `TELEGRAM_CHANNEL_MODE=always|never`.
@@ -48,4 +202,8 @@ Claude Code shows a confirmation dialog on every start when this flag is used.
 - **Multi-session router (experimental)**: `router.ts` lets one bot drive many sessions. Direct messages go to an always-on `main` session; each topic of a forum group gets its own Claude Code session in a tmux window, started on demand with `--resume` of the topic's previous conversation, stopped after 30 idle minutes, and capped by free memory (with a reserve) and CPU load. Sessions run `server.ts` in router mode (`TELEGRAM_ROUTER_SOCKET`): it receives its topic's updates over a unix socket and posts into its topic. `/sessions` lists them, and first forgets topics that were deleted in Telegram (bots get no event for that; reopening an open topic is used as a no-op probe). Once Claude Code or this plugin has been updated on disk, sessions still on the old version are restarted after five quiet minutes (main resumes right away and says so in the chat); sessions start with `--system-prompt-snapshot off` so a resumed conversation gets the current plugin instructions, and with `TELEGRAM_ROUTER_SELF_UPDATE=1` the router exits for its supervisor loop to start the new copy. Bot API requests time out instead of hanging, and the getUpdates offset is kept on disk so a restart does not handle an update twice. A session that has not connected two minutes after starting is reported in its chat with the last lines of its terminal and restarted once; messages waiting for a session are kept on disk across router restarts. See the header of `router.ts` for settings.
 - `zod` is declared as a direct dependency.
 
-The first commit is the unmodified upstream code; see the git history for each change.
+</details>
+
+## License
+
+Apache-2.0, same as upstream. See [LICENSE](LICENSE).

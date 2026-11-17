@@ -199,6 +199,7 @@ type Runtime = {
   startedAt: number
   stopping?: boolean
   dialogDone?: boolean
+  trustDone?: boolean // accepted the workspace trust prompt (customers' folder)
   status?: string
   version?: string // Claude Code version the session runs
   updateTo?: string // stopped to pick up this version
@@ -475,7 +476,7 @@ async function start(slot: Slot): Promise<void> {
     return
   }
   const pid = windowPid(slot.name)
-  Object.assign(r, { pid, startedAt: Date.now(), stopping: false, dialogDone: false, status: undefined, queuedNotice: false, connected: false })
+  Object.assign(r, { pid, startedAt: Date.now(), stopping: false, dialogDone: false, trustDone: false, status: undefined, queuedNotice: false, connected: false })
   slot.lastActive = Date.now()
   dirty = true
   log(`${slot.name}: started pid ${pid}${resume.length ? ` resuming ${slot.sessionId}` : ' (new session)'} in ${slot.cwd}`)
@@ -498,6 +499,17 @@ function confirmDialog(slot: Slot, r: Runtime): void {
   try {
     screen = tmux('capture-pane', '-p', '-t', windowTarget(slot.name))
   } catch {
+    return
+  }
+  // The customers' folder is ours (created by the router), so accept the
+  // workspace trust prompt a fresh folder gets. Never for other folders.
+  if (slot.business && slot.cwd === BUSINESS_DIR && !r.trustDone && screen.includes('Yes, I trust this folder') && screen.includes(BUSINESS_DIR)) {
+    try {
+      tmux('send-keys', '-t', windowTarget(slot.name), 'Down')
+      tmux('send-keys', '-t', windowTarget(slot.name), 'Enter')
+      r.trustDone = true
+      log(`${slot.name}: trusted its own folder ${BUSINESS_DIR}`)
+    } catch {}
     return
   }
   if (screen.includes('Loading development channels') && screen.includes('I am using this for local development')) {

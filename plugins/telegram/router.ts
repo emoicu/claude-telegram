@@ -26,7 +26,7 @@
  *   TELEGRAM_ROUTER_MAX         hard cap on running sessions (default: no cap besides resources)
  *   TELEGRAM_ROUTER_RESERVE_MB  memory always left free (default: max(1024, 20% of RAM))
  *   TELEGRAM_ROUTER_SESSION_MB  memory per session until one is measured (default 500)
- *   TELEGRAM_BUSINESS_TOOLS     built-in tools of the customers' topic session (default ToolSearch only; see business.ts)
+ *   TELEGRAM_BUSINESS_TOOLS     built-in tools of the customers' topic session (default ToolSearch,Read; see business.ts)
  *   TELEGRAM_BUSINESS_DENY      tools it must not use (default mcp__claude_ai_*, the claude.ai connectors)
  */
 import { execFileSync } from 'child_process'
@@ -65,14 +65,26 @@ const START_TIMEOUT_MS = 120_000 // a session that has not connected by then is 
 const UPDATE_CHECK_MS = 10 * 60_000 // how often to look for a newer Claude Code on disk
 const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this much quiet
 // Customer text is untrusted, so the customers' topic session gets only
-// ToolSearch, which it needs to load the plugin's (deferred) MCP tools.
-const BUSINESS_TOOLS = process.env.TELEGRAM_BUSINESS_TOOLS ?? 'ToolSearch'
+// ToolSearch (to load the plugin's deferred MCP tools) and Read (to see the
+// photos customers send). It runs with --restricted in its own folder, which
+// confines Read to that folder and ignores the user's settings files.
+const BUSINESS_TOOLS = process.env.TELEGRAM_BUSINESS_TOOLS ?? 'ToolSearch,Read'
+const BUSINESS_DIR = join(STATE_DIR, 'business-files')
+// --restricted skips the user's settings, so enable the plugin here and let
+// it use its own tools without a prompt.
+const PLUGIN_ID = /plugin:(\S+)/.exec(CLAUDE_CMD.join(' '))?.[1] ?? 'telegram@emoicu-plugins'
+const BUSINESS_SETTINGS = JSON.stringify({
+  enabledPlugins: { [PLUGIN_ID]: true },
+  permissions: { allow: [`mcp__plugin_${PLUGIN_ID.split('@')[0]}_${PLUGIN_ID.split('@')[0]}`] },
+})
 // …and none of the claude.ai connectors (docs, mail…) the account may have.
 const BUSINESS_DENY = process.env.TELEGRAM_BUSINESS_DENY ?? 'mcp__claude_ai_*'
 // Claude Code records the system prompt once per conversation and replays
 // it on --resume, which would keep the customers' session on the reply
 // rules and FAQ it first started with. Rebuild it on every start instead.
 const businessArgs = () => [
+  '--restricted',
+  '--settings', BUSINESS_SETTINGS,
   '--tools', BUSINESS_TOOLS,
   ...(BUSINESS_DENY ? ['--disallowedTools', BUSINESS_DENY] : []),
   '--system-prompt-snapshot', 'off',
@@ -416,7 +428,10 @@ function sessionEnv(slot: Slot): Record<string, string> {
     env.TELEGRAM_TOPIC_THREAD = String(slot.thread)
     if (slot.title) env.TELEGRAM_TOPIC_TITLE = slot.title
   }
-  if (slot.business) env.TELEGRAM_BUSINESS = '1'
+  if (slot.business) {
+    env.TELEGRAM_BUSINESS = '1'
+    env.TELEGRAM_BUSINESS_DIR = BUSINESS_DIR
+  }
   return env
 }
 
@@ -616,6 +631,14 @@ const businessHooks: RouterHooks = {
     if (!slot.business || slot.closed) {
       slot.business = true
       slot.closed = false
+      dirty = true
+    }
+    if (slot.cwd !== BUSINESS_DIR) {
+      // Its own folder: the only place its Read tool can reach. A session
+      // from another folder cannot be resumed there, so start fresh.
+      mkdirSync(BUSINESS_DIR, { recursive: true, mode: 0o700 })
+      slot.cwd = BUSINESS_DIR
+      slot.sessionId = undefined
       dirty = true
     }
     deliver(slot, update)

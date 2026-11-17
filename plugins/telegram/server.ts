@@ -140,6 +140,37 @@ const TOPIC_THREAD = Number(process.env.TELEGRAM_TOPIC_THREAD) || undefined
 const routed = channelMode.poll && !!ROUTER_SOCKET
 // The router's Telegram Business customers' topic (see business.ts).
 const BUSINESS = process.env.TELEGRAM_BUSINESS === '1' && !!TOPIC_CHAT && routed
+// Its working folder; its Read tool cannot see anything else, so customer
+// photos are saved here.
+const BUSINESS_DIR = process.env.TELEGRAM_BUSINESS_DIR || undefined
+const BUSINESS_KEEP_DAYS = 30
+
+async function saveBusinessPhoto(msg: { photo?: { file_id: string; file_unique_id: string }[]; document?: { file_id: string; file_unique_id: string; mime_type?: string; file_size?: number } }): Promise<string | undefined> {
+  if (!BUSINESS_DIR) return undefined
+  const doc = msg.document?.mime_type?.startsWith('image/') && (msg.document.file_size ?? 0) <= 20 * 1024 * 1024 ? msg.document : undefined
+  const pick = msg.photo?.[msg.photo.length - 1] ?? doc
+  if (!pick) return undefined
+  try {
+    const file = await bot.api.getFile(pick.file_id)
+    if (!file.file_path) return undefined
+    const res = await fetch(`https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`)
+    const ext = /^[a-z0-9]{1,5}$/i.test(file.file_path.split('.').pop() ?? '') ? file.file_path.split('.').pop() : 'jpg'
+    const dir = join(BUSINESS_DIR, 'photos')
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const path = join(dir, `${Date.now()}-${pick.file_unique_id.replace(/[^\w-]/g, '')}.${ext}`)
+    writeFileSync(path, Buffer.from(await res.arrayBuffer()), { mode: 0o600 })
+    const cutoff = Date.now() - BUSINESS_KEEP_DAYS * 86_400_000
+    for (const name of readdirSync(dir)) {
+      try {
+        if (statSync(join(dir, name)).mtimeMs < cutoff) rmSync(join(dir, name))
+      } catch {}
+    }
+    return path
+  } catch (err) {
+    process.stderr.write(`telegram channel: business photo download failed: ${err}\n`)
+    return undefined
+  }
+}
 // Facts the owner wants customer replies based on (prices, shipping, rules).
 const BUSINESS_FAQ = (() => {
   if (!BUSINESS) return ''
@@ -1773,6 +1804,7 @@ bot.on(['business_message', 'edited_business_message'], async ctx => {
   noteStatusChat(TOPIC_CHAT!)
   void bot.api.sendChatAction(TOPIC_CHAT!, 'typing', { message_thread_id: TOPIC_THREAD }).catch(() => {})
   const edited = !!ctx.editedBusinessMessage
+  const imagePath = await saveBusinessPhoto(msg as any)
   mcp.notification({
     method: 'notifications/claude/channel',
     params: {
@@ -1786,6 +1818,7 @@ bot.on(['business_message', 'edited_business_message'], async ctx => {
         business_connection_id: msg.business_connection_id!,
         business_account: safeName(store.accounts[conn.userId]?.name) ?? conn.userId,
         reply_mode: chatMode(store, String(msg.chat.id)),
+        ...(imagePath ? { image_path: imagePath } : {}),
       },
     },
   }).catch(err => {

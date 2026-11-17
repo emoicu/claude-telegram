@@ -34,7 +34,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { cpus, homedir, loadavg } from 'os'
 import { basename, join } from 'path'
 import type { Socket } from 'bun'
-import { BUSINESS_UPDATES, handleBusinessCallback, handleBusinessUpdate, type RouterHooks } from './business.ts'
+import { BUSINESS_UPDATES, handleBusinessCallback, handleBusinessCommand, handleBusinessUpdate, type RouterHooks } from './business.ts'
 
 // ---- config ---------------------------------------------------------------
 
@@ -621,6 +621,7 @@ async function handleUpdate(u: any): Promise<void> {
   const cq = u.callback_query
   // Business approval buttons work even when no session is running.
   if (cq && (await handleBusinessCallback(cq, businessHooks))) return
+  if (u.message && (await handleBusinessCommand(u.message, businessHooks))) return
   // Reactions carry no topic: offer them to every running session of that
   // group; each one ignores reactions on messages it did not send.
   if (u.message_reaction) {

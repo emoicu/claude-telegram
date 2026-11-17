@@ -19,6 +19,12 @@
  *     draft is posted in the topic with ✅ Send / ❌ Discard buttons, again
  *     handled by the router, so a draft can be sent even after the session
  *     stopped.
+ *   - Each customer chat is in "confirm" mode (every reply is a draft) or
+ *     "auto" mode, where the session may send clearly safe replies itself
+ *     with business_reply and drafts everything else. The copy of each
+ *     customer message carries a button to switch that chat; /autoreply
+ *     on|off sets the mode for chats not switched yet (default confirm).
+ *     Facts the session may rely on go in business-faq.md.
  *
  * State: <state dir>/business.json (accounts, connections, known customer
  * chats, the topic) and business-drafts.json.
@@ -30,12 +36,14 @@ export const BUSINESS_UPDATES = ['business_connection', 'business_message', 'edi
 
 export type Account = { name: string; status: 'allowed' | 'denied' | 'pending' }
 export type Connection = { userId: string; enabled: boolean; canReply: boolean }
-export type CustomerChat = { conn: string; name: string; lastAt: number }
+export type ReplyMode = 'auto' | 'confirm'
+export type CustomerChat = { conn: string; name: string; lastAt: number; mode?: ReplyMode }
 export type Store = {
   accounts: Record<string, Account>
   connections: Record<string, Connection>
   chats: Record<string, CustomerChat>
   topic?: { chat: string; thread: number }
+  defaultMode?: ReplyMode
 }
 export type Draft = {
   conn: string
@@ -69,7 +77,21 @@ export function storePath(stateDir: string): string {
 
 export function loadStore(stateDir: string): Store {
   const s = readJson<Partial<Store>>(storePath(stateDir), {})
-  return { accounts: s.accounts ?? {}, connections: s.connections ?? {}, chats: s.chats ?? {}, topic: s.topic }
+  return { accounts: s.accounts ?? {}, connections: s.connections ?? {}, chats: s.chats ?? {}, topic: s.topic, defaultMode: s.defaultMode }
+}
+
+export function chatMode(s: Store, chatId: string): ReplyMode {
+  return s.chats[chatId]?.mode ?? s.defaultMode ?? 'confirm'
+}
+
+function modeButton(chatId: string, mode: ReplyMode, name: string): Record<string, unknown> {
+  return {
+    inline_keyboard: [[
+      mode === 'auto'
+        ? { text: `✋ Ask me before replying to ${name}`.slice(0, 60), callback_data: `biz:manual:${chatId}` }
+        : { text: `🤖 Auto-reply to ${name}`.slice(0, 60), callback_data: `biz:auto:${chatId}` },
+    ]],
+  }
 }
 
 export function saveStore(stateDir: string, s: Store): void {
@@ -233,7 +255,8 @@ export async function handleBusinessUpdate(u: any, h: RouterHooks): Promise<bool
     if (String(msg.from?.id) === conn.userId) return true
     const chatId = String(msg.chat.id)
     const name = personName(msg.from ?? msg.chat)
-    s.chats[chatId] = { conn: connId, name, lastAt: Date.now() }
+    s.chats[chatId] = { ...s.chats[chatId], conn: connId, name, lastAt: Date.now() }
+    const mode = chatMode(s, chatId)
     const topic = await customerTopic(h, s)
     if (!topic) {
       if (!warnedNoTopic) {
@@ -248,8 +271,8 @@ export async function handleBusinessUpdate(u: any, h: RouterHooks): Promise<bool
       .api('sendMessage', {
         chat_id: topic.chat,
         message_thread_id: topic.thread,
-        text: `💬 ${name} → ${account}${edited}\n\n${describeMessage(msg)}`.slice(0, 4096),
-        disable_notification: false,
+        text: `💬 ${name} → ${account}${edited} · ${mode === 'auto' ? '🤖 auto' : '✋ confirm'}\n\n${describeMessage(msg)}`.slice(0, 4096),
+        reply_markup: modeButton(chatId, mode, name),
       })
       .catch(err => h.log(`business: copy to topic failed: ${err}`))
     await h.route(topic.chat, topic.thread, TOPIC_TITLE, u)
@@ -261,7 +284,7 @@ export async function handleBusinessUpdate(u: any, h: RouterHooks): Promise<bool
 
 /** Handle a biz:* button. Returns false if the callback is not one of ours. */
 export async function handleBusinessCallback(cq: any, h: RouterHooks): Promise<boolean> {
-  const m = /^biz:(allow|deny|send|drop):([\w-]{1,40})$/.exec(cq.data ?? '')
+  const m = /^biz:(allow|deny|send|drop|auto|manual):([\w-]{1,40})$/.exec(cq.data ?? '')
   if (!m) return false
   const answer = (text?: string) => h.api('answerCallbackQuery', { callback_query_id: cq.id, ...(text ? { text } : {}) }).catch(() => {})
   if (!h.owners().includes(String(cq.from?.id))) {
@@ -274,6 +297,21 @@ export async function handleBusinessCallback(cq: any, h: RouterHooks): Promise<b
     if (!where) return
     const old: string = cq.message.text ?? ''
     await h.api('editMessageText', { ...where, text: `${old}\n\n${suffix}`.slice(0, 4096) }).catch(() => {})
+  }
+
+  if (action === 'auto' || action === 'manual') {
+    const s = loadStore(h.stateDir)
+    const c = s.chats[id]
+    if (!c) {
+      await answer('That chat is no longer known.')
+      return true
+    }
+    c.mode = action === 'auto' ? 'auto' : 'confirm'
+    saveStore(h.stateDir, s)
+    h.log(`business: chat ${id} set to ${c.mode}`)
+    await answer(c.mode === 'auto' ? `Auto-reply on for ${c.name}` : `Every reply to ${c.name} needs your OK`)
+    if (where) await h.api('editMessageReplyMarkup', { ...where, reply_markup: modeButton(id, c.mode, c.name) }).catch(() => {})
+    return true
   }
 
   if (action === 'allow' || action === 'deny') {
@@ -325,5 +363,30 @@ export async function handleBusinessCallback(cq: any, h: RouterHooks): Promise<b
   saveDrafts(h.stateDir, drafts)
   await answer('Sent')
   await settle('✅ Sent')
+  return true
+}
+
+/** /autoreply [on|off] from an owner: the mode of chats not switched yet. */
+export async function handleBusinessCommand(msg: any, h: RouterHooks): Promise<boolean> {
+  const m = /^\/autoreply(?:@\w+)?(?:\s+(on|off))?\s*$/i.exec(msg?.text ?? '')
+  if (!m) return false
+  if (!h.owners().includes(String(msg.from?.id))) return true
+  const s = loadStore(h.stateDir)
+  if (m[1]) {
+    s.defaultMode = m[1].toLowerCase() === 'on' ? 'auto' : 'confirm'
+    saveStore(h.stateDir, s)
+    h.log(`business: default mode ${s.defaultMode}`)
+  }
+  const mode = s.defaultMode ?? 'confirm'
+  const switched = Object.values(s.chats).filter(c => c.mode).map(c => `${c.mode === 'auto' ? '🤖' : '✋'} ${c.name}`)
+  const text =
+    (mode === 'auto'
+      ? '🤖 Auto-reply is the default: clearly safe replies go out by themselves, the rest come here as drafts.'
+      : '✋ Confirm is the default: every reply comes here as a draft first.') +
+    (switched.length ? `\n\nSet per chat:\n${switched.join('\n')}` : '') +
+    `\n\n/autoreply ${mode === 'auto' ? 'off' : 'on'} to switch. The button under each customer message switches one chat.`
+  await h
+    .api('sendMessage', { chat_id: msg.chat.id, text, ...(msg.is_topic_message ? { message_thread_id: msg.message_thread_id } : {}) })
+    .catch(() => {})
   return true
 }

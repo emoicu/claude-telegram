@@ -26,15 +26,12 @@
  *   TELEGRAM_ROUTER_MAX         hard cap on running sessions (default: no cap besides resources)
  *   TELEGRAM_ROUTER_RESERVE_MB  memory always left free (default: max(1024, 20% of RAM))
  *   TELEGRAM_ROUTER_SESSION_MB  memory per session until one is measured (default 500)
- *   TELEGRAM_BUSINESS_TOOLS     built-in tools of the customers' topic session (default ToolSearch,Read; see business.ts)
- *   TELEGRAM_BUSINESS_DENY      tools it must not use (default mcp__claude_ai_*, the claude.ai connectors)
  */
 import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { cpus, homedir, loadavg } from 'os'
 import { basename, join } from 'path'
 import type { Socket } from 'bun'
-import { BUSINESS_UPDATES, handleBusinessCallback, handleBusinessCommand, handleBusinessUpdate, type RouterHooks } from './business.ts'
 
 // ---- config ---------------------------------------------------------------
 
@@ -64,31 +61,6 @@ const DIALOG_WINDOW_MS = 120_000 // look for the development-channels dialog thi
 const START_TIMEOUT_MS = 120_000 // a session that has not connected by then is stuck
 const UPDATE_CHECK_MS = 10 * 60_000 // how often to look for a newer Claude Code on disk
 const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this much quiet
-// Customer text is untrusted, so the customers' topic session gets only
-// ToolSearch (to load the plugin's deferred MCP tools) and Read (to see the
-// photos customers send). It runs with --restricted in its own folder, which
-// confines Read to that folder and ignores the user's settings files.
-const BUSINESS_TOOLS = process.env.TELEGRAM_BUSINESS_TOOLS ?? 'ToolSearch,Read'
-const BUSINESS_DIR = join(STATE_DIR, 'business-files')
-// --restricted skips the user's settings, so enable the plugin here and let
-// it use its own tools without a prompt.
-const PLUGIN_ID = /plugin:(\S+)/.exec(CLAUDE_CMD.join(' '))?.[1] ?? 'telegram@emoicu-plugins'
-const BUSINESS_SETTINGS = JSON.stringify({
-  enabledPlugins: { [PLUGIN_ID]: true },
-  permissions: { allow: [`mcp__plugin_${PLUGIN_ID.split('@')[0]}_${PLUGIN_ID.split('@')[0]}`] },
-})
-// …and none of the claude.ai connectors (docs, mail…) the account may have.
-const BUSINESS_DENY = process.env.TELEGRAM_BUSINESS_DENY ?? 'mcp__claude_ai_*'
-// Claude Code records the system prompt once per conversation and replays
-// it on --resume, which would keep the customers' session on the reply
-// rules and FAQ it first started with. Rebuild it on every start instead.
-const businessArgs = () => [
-  '--restricted',
-  '--settings', BUSINESS_SETTINGS,
-  '--tools', BUSINESS_TOOLS,
-  ...(BUSINESS_DENY ? ['--disallowedTools', BUSINESS_DENY] : []),
-  '--system-prompt-snapshot', 'off',
-]
 
 function tmuxSessionName(): string {
   if (process.env.TELEGRAM_ROUTER_TMUX) return process.env.TELEGRAM_ROUTER_TMUX
@@ -191,8 +163,6 @@ type Slot = {
   lastActive: number
   pinned?: boolean // never stopped for being idle (main)
   closed?: boolean // topic closed in Telegram
-  business?: boolean // a Telegram Business customer's topic
-  customer?: string // that customer's chat id
 }
 
 type Runtime = {
@@ -200,7 +170,6 @@ type Runtime = {
   startedAt: number
   stopping?: boolean
   dialogDone?: boolean
-  trustDone?: boolean // accepted the workspace trust prompt (customers' folder)
   status?: string
   version?: string // Claude Code version the session runs
   updateTo?: string // stopped to pick up this version
@@ -430,11 +399,6 @@ function sessionEnv(slot: Slot): Record<string, string> {
     env.TELEGRAM_TOPIC_THREAD = String(slot.thread)
     if (slot.title) env.TELEGRAM_TOPIC_TITLE = slot.title
   }
-  if (slot.business) {
-    env.TELEGRAM_BUSINESS = '1'
-    env.TELEGRAM_BUSINESS_DIR = slot.cwd
-    if (slot.customer) env.TELEGRAM_BUSINESS_CHAT = slot.customer
-  }
   return env
 }
 
@@ -469,7 +433,7 @@ async function start(slot: Slot): Promise<void> {
   if (slot.sessionId && !resume.length) log(`${slot.name}: session ${slot.sessionId} is gone, starting fresh`)
   const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `${TMUX_SESSION}:`, '-n', displayName(slot), '-c', existsSync(slot.cwd) ? slot.cwd : MAIN_CWD]
   for (const [k, v] of Object.entries(sessionEnv(slot))) args.push('-e', `${k}=${v}`)
-  args.push(...CLAUDE_CMD, ...(slot.business ? businessArgs() : []), ...resume)
+  args.push(...CLAUDE_CMD, ...resume)
   try {
     const id = tmux(...args).trim()
     tmux('set-option', '-w', '-t', id, '@slot', slot.name)
@@ -478,7 +442,7 @@ async function start(slot: Slot): Promise<void> {
     return
   }
   const pid = windowPid(slot.name)
-  Object.assign(r, { pid, startedAt: Date.now(), stopping: false, dialogDone: false, trustDone: false, status: undefined, queuedNotice: false, connected: false })
+  Object.assign(r, { pid, startedAt: Date.now(), stopping: false, dialogDone: false, status: undefined, queuedNotice: false, connected: false })
   slot.lastActive = Date.now()
   dirty = true
   log(`${slot.name}: started pid ${pid}${resume.length ? ` resuming ${slot.sessionId}` : ' (new session)'} in ${slot.cwd}`)
@@ -501,17 +465,6 @@ function confirmDialog(slot: Slot, r: Runtime): void {
   try {
     screen = tmux('capture-pane', '-p', '-t', windowTarget(slot.name))
   } catch {
-    return
-  }
-  // A customer's folder is ours (created by the router), so accept the
-  // workspace trust prompt a fresh folder gets. Never for other folders.
-  if (slot.business && slot.cwd.startsWith(BUSINESS_DIR + '/') && !r.trustDone && screen.includes('Yes, I trust this folder') && screen.includes(slot.cwd)) {
-    try {
-      tmux('send-keys', '-t', windowTarget(slot.name), 'Down')
-      tmux('send-keys', '-t', windowTarget(slot.name), 'Enter')
-      r.trustDone = true
-      log(`${slot.name}: trusted its own folder ${slot.cwd}`)
-    } catch {}
     return
   }
   if (screen.includes('Loading development channels') && screen.includes('I am using this for local development')) {
@@ -633,43 +586,9 @@ Bun.listen<SockData>({
 /** Messages Claude should see; service messages (topic created…) are not. */
 const ACTIONABLE = ['text', 'photo', 'document', 'voice', 'audio', 'video', 'video_note', 'sticker']
 
-const businessHooks: RouterHooks = {
-  stateDir: STATE_DIR,
-  api,
-  log,
-  owners: () => loadAccess().allowFrom,
-  forumChat: () => [...slots.values()].find(s => s.chat)?.chat ?? Object.keys(loadAccess().groups)[0],
-  topicExists: thread => slots.has(`t${thread}`),
-  async route(chat, thread, title, customer, update) {
-    const slot = topicSlot(chat, thread, title)
-    if (!slot.business || slot.closed || slot.customer !== customer) {
-      slot.business = true
-      slot.customer = customer
-      slot.closed = false
-      dirty = true
-    }
-    const dir = join(BUSINESS_DIR, customer.replace(/[^\w-]/g, '_'))
-    if (slot.cwd !== dir) {
-      // Its own folder: the only place its Read tool can reach, holding only
-      // this customer's photos. A session from another folder cannot be
-      // resumed there, so start fresh.
-      mkdirSync(dir, { recursive: true, mode: 0o700 })
-      slot.cwd = dir
-      slot.sessionId = undefined
-      dirty = true
-    }
-    deliver(slot, update)
-    if (!alive(runtime(slot.name).pid)) await wake(slot)
-  },
-}
-
 async function handleUpdate(u: any): Promise<void> {
-  if (await handleBusinessUpdate(u, businessHooks)) return
   const msg = u.message ?? u.edited_message
   const cq = u.callback_query
-  // Business approval buttons work even when no session is running.
-  if (cq && (await handleBusinessCallback(cq, businessHooks))) return
-  if (u.message && (await handleBusinessCommand(u.message, businessHooks))) return
   // Reactions carry no topic: offer them to every running session of that
   // group; each one ignores reactions on messages it did not send.
   if (u.message_reaction) {
@@ -985,7 +904,7 @@ process.on('SIGINT', () => process.exit(0))
       const updates: any[] = await api('getUpdates', {
         offset,
         timeout: 30,
-        allowed_updates: ['message', 'edited_message', 'callback_query', 'message_reaction', 'stopped_message_generation', ...BUSINESS_UPDATES],
+        allowed_updates: ['message', 'edited_message', 'callback_query', 'message_reaction', 'stopped_message_generation'],
       })
       attempt = 0
       for (const u of updates) {

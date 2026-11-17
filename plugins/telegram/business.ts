@@ -24,6 +24,9 @@
  *     with business_reply and drafts everything else. The copy of each
  *     customer message carries a button to switch that chat; /autoreply
  *     on|off sets the mode for chats not switched yet (default confirm).
+ *     A chat's own mode wins over its account's, which wins over that.
+ *   - /business opens a settings panel: revoke or re-allow accounts, and
+ *     switch the mode of accounts, recent customers and the default.
  *     Facts the session may rely on go in business-faq.md.
  *
  * State: <state dir>/business.json (accounts, connections, known customer
@@ -34,9 +37,9 @@ import { join } from 'path'
 
 export const BUSINESS_UPDATES = ['business_connection', 'business_message', 'edited_business_message']
 
-export type Account = { name: string; status: 'allowed' | 'denied' | 'pending' }
-export type Connection = { userId: string; enabled: boolean; canReply: boolean }
 export type ReplyMode = 'auto' | 'confirm'
+export type Account = { name: string; status: 'allowed' | 'denied' | 'pending'; mode?: ReplyMode }
+export type Connection = { userId: string; enabled: boolean; canReply: boolean }
 export type CustomerChat = { conn: string; name: string; lastAt: number; mode?: ReplyMode }
 export type Store = {
   accounts: Record<string, Account>
@@ -81,7 +84,54 @@ export function loadStore(stateDir: string): Store {
 }
 
 export function chatMode(s: Store, chatId: string): ReplyMode {
-  return s.chats[chatId]?.mode ?? s.defaultMode ?? 'confirm'
+  const c = s.chats[chatId]
+  const acct = c ? s.accounts[s.connections[c.conn]?.userId ?? ''] : undefined
+  return c?.mode ?? acct?.mode ?? s.defaultMode ?? 'confirm'
+}
+
+const flip = (m: ReplyMode): ReplyMode => (m === 'auto' ? 'confirm' : 'auto')
+const modeLabel = (m: ReplyMode) => (m === 'auto' ? '🤖 auto' : '✋ confirm')
+const PANEL_CUSTOMERS = 8
+
+/** The /business settings panel. */
+function renderPanel(s: Store): { text: string; reply_markup: Record<string, unknown> } {
+  const def = s.defaultMode ?? 'confirm'
+  const accountOf = (conn: string) => s.connections[conn]?.userId
+  const connected = (uid: string) => Object.values(s.connections).find(c => c.userId === uid && c.enabled)
+  const lines = ['💼 Business settings', '', `Default for new customers: ${modeLabel(def)}`, '', 'Accounts:']
+  const rows: { text: string; callback_data: string }[][] = [
+    [{ text: `Default → ${modeLabel(flip(def))}`, callback_data: 'biz:pd:x' }],
+  ]
+  const accounts = Object.entries(s.accounts)
+  if (!accounts.length) lines.push('  none yet')
+  for (const [uid, a] of accounts) {
+    const c = connected(uid)
+    const state = a.status === 'allowed' ? '✅' : a.status === 'denied' ? '🚫 revoked' : '⏳ waiting'
+    const conn = c ? (c.canReply ? 'connected' : 'connected, cannot reply') : 'not connected'
+    lines.push(`  ${state} ${a.name} — ${conn}${a.status === 'allowed' ? ` · ${a.mode ? modeLabel(a.mode) : 'default mode'}` : ''}`)
+    const name = a.name.slice(0, 20)
+    rows.push(
+      a.status === 'allowed'
+        ? [
+            { text: `🚫 Revoke ${name}`, callback_data: `biz:pr:${uid}` },
+            { text: `${name} → ${modeLabel(flip(a.mode ?? def))}`, callback_data: `biz:pm:${uid}` },
+          ]
+        : [{ text: `✅ Allow ${name}`, callback_data: `biz:pa:${uid}` }],
+    )
+  }
+  const recent = Object.entries(s.chats)
+    .filter(([, c]) => s.accounts[accountOf(c.conn) ?? '']?.status === 'allowed')
+    .sort((a, b) => b[1].lastAt - a[1].lastAt)
+    .slice(0, PANEL_CUSTOMERS)
+  lines.push('', 'Recent customers:')
+  if (!recent.length) lines.push('  none yet')
+  for (const [id, c] of recent) {
+    const m = chatMode(s, id)
+    lines.push(`  ${c.name} · ${modeLabel(m)}${c.mode ? '' : ' (inherited)'}`)
+    rows.push([{ text: `${c.name.slice(0, 24)} → ${modeLabel(flip(m))}`, callback_data: `biz:pc:${id}` }])
+  }
+  lines.push('', 'Revoked accounts are ignored until allowed again. A customer’s own setting wins over its account’s, which wins over the default.')
+  return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } }
 }
 
 function modeButton(chatId: string, mode: ReplyMode, name: string): Record<string, unknown> {
@@ -186,7 +236,7 @@ async function noteConnection(h: RouterHooks, s: Store, bc: any): Promise<void> 
     return
   }
   const acct = s.accounts[userId]
-  if (h.owners().includes(userId) && acct?.status !== 'allowed') {
+  if (h.owners().includes(userId) && !acct) {
     s.accounts[userId] = { name, status: 'allowed' }
     await tellOwners(h, `✅ Your business account ${name} is connected. Customer messages will show up in the “${TOPIC_TITLE}” topic with a draft reply for you to approve.` + (canReply ? '' : '\n\n⚠️ The bot may not reply yet: turn on “Reply to messages” in Telegram Business → Chatbots.'))
     return
@@ -284,7 +334,7 @@ export async function handleBusinessUpdate(u: any, h: RouterHooks): Promise<bool
 
 /** Handle a biz:* button. Returns false if the callback is not one of ours. */
 export async function handleBusinessCallback(cq: any, h: RouterHooks): Promise<boolean> {
-  const m = /^biz:(allow|deny|send|drop|auto|manual):([\w-]{1,40})$/.exec(cq.data ?? '')
+  const m = /^biz:(allow|deny|send|drop|auto|manual|pa|pr|pm|pc|pd):([\w-]{1,40})$/.exec(cq.data ?? '')
   if (!m) return false
   const answer = (text?: string) => h.api('answerCallbackQuery', { callback_query_id: cq.id, ...(text ? { text } : {}) }).catch(() => {})
   if (!h.owners().includes(String(cq.from?.id))) {
@@ -297,6 +347,34 @@ export async function handleBusinessCallback(cq: any, h: RouterHooks): Promise<b
     if (!where) return
     const old: string = cq.message.text ?? ''
     await h.api('editMessageText', { ...where, text: `${old}\n\n${suffix}`.slice(0, 4096) }).catch(() => {})
+  }
+
+  if (['pa', 'pr', 'pm', 'pc', 'pd'].includes(action)) {
+    const s = loadStore(h.stateDir)
+    let note = ''
+    if (action === 'pd') {
+      s.defaultMode = flip(s.defaultMode ?? 'confirm')
+      note = `Default: ${modeLabel(s.defaultMode)}`
+    } else if (action === 'pc') {
+      const c = s.chats[id]
+      if (c) {
+        c.mode = flip(chatMode(s, id))
+        note = `${c.name}: ${modeLabel(c.mode)}`
+      }
+    } else {
+      const a = s.accounts[id]
+      if (a) {
+        if (action === 'pa') a.status = 'allowed'
+        if (action === 'pr') a.status = 'denied'
+        if (action === 'pm') a.mode = flip(a.mode ?? s.defaultMode ?? 'confirm')
+        note = action === 'pm' ? `${a.name}: ${modeLabel(a.mode!)}` : `${a.name}: ${a.status === 'allowed' ? 'allowed' : 'revoked'}`
+      }
+    }
+    saveStore(h.stateDir, s)
+    if (note) h.log(`business: ${note}`)
+    await answer(note || 'Not found')
+    if (where) await h.api('editMessageText', { ...where, ...renderPanel(s) }).catch(() => {})
+    return true
   }
 
   if (action === 'auto' || action === 'manual') {
@@ -366,8 +444,15 @@ export async function handleBusinessCallback(cq: any, h: RouterHooks): Promise<b
   return true
 }
 
-/** /autoreply [on|off] from an owner: the mode of chats not switched yet. */
+/** /business (settings panel) and /autoreply [on|off] from an owner. */
 export async function handleBusinessCommand(msg: any, h: RouterHooks): Promise<boolean> {
+  const where = { chat_id: msg?.chat?.id, ...(msg?.is_topic_message ? { message_thread_id: msg.message_thread_id } : {}) }
+  if (/^\/business(?:@\w+)?\s*$/i.test(msg?.text ?? '')) {
+    if (h.owners().includes(String(msg.from?.id))) {
+      await h.api('sendMessage', { ...where, ...renderPanel(loadStore(h.stateDir)) }).catch(err => h.log(`business: panel failed: ${err}`))
+    }
+    return true
+  }
   const m = /^\/autoreply(?:@\w+)?(?:\s+(on|off))?\s*$/i.exec(msg?.text ?? '')
   if (!m) return false
   if (!h.owners().includes(String(msg.from?.id))) return true
@@ -384,9 +469,9 @@ export async function handleBusinessCommand(msg: any, h: RouterHooks): Promise<b
       ? '🤖 Auto-reply is the default: clearly safe replies go out by themselves, the rest come here as drafts.'
       : '✋ Confirm is the default: every reply comes here as a draft first.') +
     (switched.length ? `\n\nSet per chat:\n${switched.join('\n')}` : '') +
-    `\n\n/autoreply ${mode === 'auto' ? 'off' : 'on'} to switch. The button under each customer message switches one chat.`
+    `\n\n/autoreply ${mode === 'auto' ? 'off' : 'on'} to switch. The button under each customer message switches one chat; /business shows every setting.`
   await h
-    .api('sendMessage', { chat_id: msg.chat.id, text, ...(msg.is_topic_message ? { message_thread_id: msg.message_thread_id } : {}) })
+    .api('sendMessage', { ...where, text })
     .catch(() => {})
   return true
 }

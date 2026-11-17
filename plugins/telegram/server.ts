@@ -1843,7 +1843,14 @@ const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const STATUS_ENABLED =
   channelMode.poll && channelMode.claudePid != null && process.env.TELEGRAM_STATUS !== 'off'
 const STATUS_POLL_MS = 2000
-const STATUS_SHOW_AFTER_MS = 8000 // short turns get typing only, no status message
+// Short turns get typing (and the reaction status) only, no status line.
+// With reaction status on, the line waits longer: the reaction already
+// says a message is being worked on. TELEGRAM_STATUS_AFTER_SEC overrides.
+const STATUS_AFTER_ENV = Number(process.env.TELEGRAM_STATUS_AFTER_SEC)
+const STATUS_SHOW_AFTER_MS =
+  Number.isFinite(STATUS_AFTER_ENV) && process.env.TELEGRAM_STATUS_AFTER_SEC
+    ? STATUS_AFTER_ENV * 1000
+    : process.env.TELEGRAM_REACTION_STATUS === 'off' ? 8000 : 30_000
 const STATUS_EDIT_MIN_MS = 4000 // stay well under Telegram's edit rate limits
 const STATUS_IDLE_TICKS = 2 // debounce: idle must persist this many polls
 const STATUS_MOVE_AFTER_REPLY_MS = 5000 // re-post below a reply if work continues
@@ -1854,7 +1861,7 @@ const TYPING_EVERY_MS = 4500
 // button. A draft lives ~30s unless refreshed and vanishes when the bot sends
 // a message. TELEGRAM_STATUS_STYLE=message keeps the old status message.
 const STATUS_DRAFTS = process.env.TELEGRAM_STATUS_STYLE !== 'message'
-const DRAFT_SHOW_AFTER_MS = 3000
+const DRAFT_SHOW_AFTER_MS = process.env.TELEGRAM_STATUS_AFTER_SEC || process.env.TELEGRAM_REACTION_STATUS !== 'off' ? STATUS_SHOW_AFTER_MS : 3000
 const DRAFT_EVERY_MS = 3000
 const TRANSCRIPT_TAIL_BYTES = 512 * 1024
 

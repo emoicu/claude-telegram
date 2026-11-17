@@ -11,8 +11,10 @@
  *     allowed automatically; any other account triggers a prompt in the
  *     owner's DM with ✅ Allow / ❌ Deny buttons. Only allowFrom users can
  *     press them, and the router handles them itself, never Claude.
- *   - Customer messages from allowed accounts go to one forum topic
- *     ("💼 Customers") whose session runs with built-in tools turned off
+ *   - Each customer of an allowed account gets a forum topic of their own
+ *     ("💼 <name>"), so customers never share a conversation (no details
+ *     of one can leak into a reply to another). Its session runs in its
+ *     own folder (photos from that customer only) with built-in tools off
  *     except ToolSearch (TELEGRAM_BUSINESS_TOOLS), which it needs to load
  *     the plugin's deferred MCP tools: customer text is untrusted.
  *   - That session drafts with the business_draft tool (server.ts). The
@@ -40,12 +42,17 @@ export const BUSINESS_UPDATES = ['business_connection', 'business_message', 'edi
 export type ReplyMode = 'auto' | 'confirm'
 export type Account = { name: string; status: 'allowed' | 'denied' | 'pending'; mode?: ReplyMode }
 export type Connection = { userId: string; enabled: boolean; canReply: boolean }
-export type CustomerChat = { conn: string; name: string; lastAt: number; mode?: ReplyMode }
+export type CustomerChat = {
+  conn: string
+  name: string
+  lastAt: number
+  mode?: ReplyMode
+  topic?: { chat: string; thread: number } // this customer's own forum topic
+}
 export type Store = {
   accounts: Record<string, Account>
   connections: Record<string, Connection>
   chats: Record<string, CustomerChat>
-  topic?: { chat: string; thread: number }
   defaultMode?: ReplyMode
 }
 export type Draft = {
@@ -80,7 +87,7 @@ export function storePath(stateDir: string): string {
 
 export function loadStore(stateDir: string): Store {
   const s = readJson<Partial<Store>>(storePath(stateDir), {})
-  return { accounts: s.accounts ?? {}, connections: s.connections ?? {}, chats: s.chats ?? {}, topic: s.topic, defaultMode: s.defaultMode }
+  return { accounts: s.accounts ?? {}, connections: s.connections ?? {}, chats: s.chats ?? {}, defaultMode: s.defaultMode }
 }
 
 export function chatMode(s: Store, chatId: string): ReplyMode {
@@ -193,13 +200,13 @@ export type RouterHooks = {
   owners: () => string[]
   /** A forum group to open the customers' topic in, if any. */
   forumChat: () => string | undefined
-  /** Hand an update to the session of this topic, starting it if needed. */
-  route: (chat: string, thread: number, title: string, update: unknown) => Promise<void>
+  /** Hand an update to the session of this customer's topic, starting it if needed. */
+  route: (chat: string, thread: number, title: string, customer: string, update: unknown) => Promise<void>
   /** Does this topic still exist as a slot? */
   topicExists: (thread: number) => boolean
 }
 
-const TOPIC_TITLE = process.env.TELEGRAM_BUSINESS_TOPIC ?? '💼 Customers'
+const TOPIC_PREFIX = process.env.TELEGRAM_BUSINESS_TOPIC_PREFIX ?? '💼'
 
 async function tellOwners(h: RouterHooks, text: string, extra: Record<string, unknown> = {}): Promise<void> {
   for (const chat_id of h.owners()) {
@@ -238,7 +245,7 @@ async function noteConnection(h: RouterHooks, s: Store, bc: any): Promise<void> 
   const acct = s.accounts[userId]
   if (h.owners().includes(userId) && !acct) {
     s.accounts[userId] = { name, status: 'allowed' }
-    await tellOwners(h, `✅ Your business account ${name} is connected. Customer messages will show up in the “${TOPIC_TITLE}” topic with a draft reply for you to approve.` + (canReply ? '' : '\n\n⚠️ The bot may not reply yet: turn on “Reply to messages” in Telegram Business → Chatbots.'))
+    await tellOwners(h, `✅ Your business account ${name} is connected. Each customer gets a “${TOPIC_PREFIX} <name>” topic in your group, with a draft reply for you to approve.` + (canReply ? '' : '\n\n⚠️ The bot may not reply yet: turn on “Reply to messages” in Telegram Business → Chatbots.'))
     return
   }
   if (!acct) await askOwners(h, s, userId, name)
@@ -248,30 +255,36 @@ async function noteConnection(h: RouterHooks, s: Store, bc: any): Promise<void> 
   }
 }
 
-async function customerTopic(h: RouterHooks, s: Store): Promise<{ chat: string; thread: number } | undefined> {
-  if (s.topic && h.topicExists(s.topic.thread)) return s.topic
-  if (s.topic) {
-    // The slot is gone (topic deleted, or never seen by this router). Check
-    // the topic itself before opening a second one: reopening answers
-    // TOPIC_NOT_MODIFIED for an open topic, TOPIC_ID_INVALID for a deleted
-    // one, and reopens a closed one (a customer is waiting, so that is fine).
-    try {
-      await h.api('reopenForumTopic', { chat_id: s.topic.chat, message_thread_id: s.topic.thread })
-      return s.topic
-    } catch (err) {
-      if (!/TOPIC_ID_INVALID|thread not found/i.test(String(err))) return s.topic
-    }
-    s.topic = undefined
+type Topic = { chat: string; thread: number }
+
+/** Is this topic still there? Probing reopens a closed one, which is fine: a customer is waiting. */
+async function topicAlive(h: RouterHooks, t: Topic): Promise<boolean> {
+  if (h.topicExists(t.thread)) return true
+  // No slot (deleted topic, or a router that never saw it). Reopening
+  // answers TOPIC_NOT_MODIFIED for an open topic and TOPIC_ID_INVALID for a
+  // deleted one.
+  try {
+    await h.api('reopenForumTopic', { chat_id: t.chat, message_thread_id: t.thread })
+    return true
+  } catch (err) {
+    return !/TOPIC_ID_INVALID|thread not found/i.test(String(err))
   }
+}
+
+/** The customer's own topic, opened on their first message. */
+async function customerTopic(h: RouterHooks, c: CustomerChat): Promise<Topic | undefined> {
+  if (c.topic && (await topicAlive(h, c.topic))) return c.topic
+  c.topic = undefined
   const chat = h.forumChat()
   if (!chat) return undefined
+  const name = `${TOPIC_PREFIX} ${c.name}`.slice(0, 128)
   try {
-    const t = await h.api('createForumTopic', { chat_id: chat, name: TOPIC_TITLE })
-    s.topic = { chat, thread: t.message_thread_id }
-    h.log(`business: opened topic ${TOPIC_TITLE} (#${t.message_thread_id}) in ${chat}`)
-    return s.topic
+    const t = await h.api('createForumTopic', { chat_id: chat, name })
+    c.topic = { chat, thread: t.message_thread_id }
+    h.log(`business: opened topic ${name} (#${t.message_thread_id}) in ${chat}`)
+    return c.topic
   } catch (err) {
-    h.log(`business: could not open the customers' topic: ${err}`)
+    h.log(`business: could not open a topic for ${c.name}: ${err}`)
     return undefined
   }
 }
@@ -305,13 +318,13 @@ export async function handleBusinessUpdate(u: any, h: RouterHooks): Promise<bool
     if (String(msg.from?.id) === conn.userId) return true
     const chatId = String(msg.chat.id)
     const name = personName(msg.from ?? msg.chat)
-    s.chats[chatId] = { ...s.chats[chatId], conn: connId, name, lastAt: Date.now() }
+    const customer = (s.chats[chatId] = { ...s.chats[chatId], conn: connId, name, lastAt: Date.now() })
     const mode = chatMode(s, chatId)
-    const topic = await customerTopic(h, s)
+    const topic = await customerTopic(h, customer)
     if (!topic) {
       if (!warnedNoTopic) {
         warnedNoTopic = true
-        await tellOwners(h, '⚠️ A customer wrote to your business account, but there is no forum group to put the customers’ topic in. Add the bot to a group with topics (as admin, allowed to manage topics).')
+        await tellOwners(h, '⚠️ A customer wrote to your business account, but there is no forum group to open their topic in. Add the bot to a group with topics (as admin, allowed to manage topics).')
       }
       return true
     }
@@ -325,7 +338,7 @@ export async function handleBusinessUpdate(u: any, h: RouterHooks): Promise<bool
         reply_markup: modeButton(chatId, mode, name),
       })
       .catch(err => h.log(`business: copy to topic failed: ${err}`))
-    await h.route(topic.chat, topic.thread, TOPIC_TITLE, u)
+    await h.route(topic.chat, topic.thread, `${TOPIC_PREFIX} ${name}`.slice(0, 128), chatId, u)
     return true
   } finally {
     saveStore(h.stateDir, s)

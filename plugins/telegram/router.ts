@@ -191,7 +191,8 @@ type Slot = {
   lastActive: number
   pinned?: boolean // never stopped for being idle (main)
   closed?: boolean // topic closed in Telegram
-  business?: boolean // the Telegram Business customers' topic
+  business?: boolean // a Telegram Business customer's topic
+  customer?: string // that customer's chat id
 }
 
 type Runtime = {
@@ -431,7 +432,8 @@ function sessionEnv(slot: Slot): Record<string, string> {
   }
   if (slot.business) {
     env.TELEGRAM_BUSINESS = '1'
-    env.TELEGRAM_BUSINESS_DIR = BUSINESS_DIR
+    env.TELEGRAM_BUSINESS_DIR = slot.cwd
+    if (slot.customer) env.TELEGRAM_BUSINESS_CHAT = slot.customer
   }
   return env
 }
@@ -501,14 +503,14 @@ function confirmDialog(slot: Slot, r: Runtime): void {
   } catch {
     return
   }
-  // The customers' folder is ours (created by the router), so accept the
+  // A customer's folder is ours (created by the router), so accept the
   // workspace trust prompt a fresh folder gets. Never for other folders.
-  if (slot.business && slot.cwd === BUSINESS_DIR && !r.trustDone && screen.includes('Yes, I trust this folder') && screen.includes(BUSINESS_DIR)) {
+  if (slot.business && slot.cwd.startsWith(BUSINESS_DIR + '/') && !r.trustDone && screen.includes('Yes, I trust this folder') && screen.includes(slot.cwd)) {
     try {
       tmux('send-keys', '-t', windowTarget(slot.name), 'Down')
       tmux('send-keys', '-t', windowTarget(slot.name), 'Enter')
       r.trustDone = true
-      log(`${slot.name}: trusted its own folder ${BUSINESS_DIR}`)
+      log(`${slot.name}: trusted its own folder ${slot.cwd}`)
     } catch {}
     return
   }
@@ -638,18 +640,21 @@ const businessHooks: RouterHooks = {
   owners: () => loadAccess().allowFrom,
   forumChat: () => [...slots.values()].find(s => s.chat)?.chat ?? Object.keys(loadAccess().groups)[0],
   topicExists: thread => slots.has(`t${thread}`),
-  async route(chat, thread, title, update) {
+  async route(chat, thread, title, customer, update) {
     const slot = topicSlot(chat, thread, title)
-    if (!slot.business || slot.closed) {
+    if (!slot.business || slot.closed || slot.customer !== customer) {
       slot.business = true
+      slot.customer = customer
       slot.closed = false
       dirty = true
     }
-    if (slot.cwd !== BUSINESS_DIR) {
-      // Its own folder: the only place its Read tool can reach. A session
-      // from another folder cannot be resumed there, so start fresh.
-      mkdirSync(BUSINESS_DIR, { recursive: true, mode: 0o700 })
-      slot.cwd = BUSINESS_DIR
+    const dir = join(BUSINESS_DIR, customer.replace(/[^\w-]/g, '_'))
+    if (slot.cwd !== dir) {
+      // Its own folder: the only place its Read tool can reach, holding only
+      // this customer's photos. A session from another folder cannot be
+      // resumed there, so start fresh.
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      slot.cwd = dir
       slot.sessionId = undefined
       dirty = true
     }

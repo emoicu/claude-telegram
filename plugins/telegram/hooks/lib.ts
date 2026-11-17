@@ -92,6 +92,7 @@ export async function botCall(token: string, method: string, body: Record<string
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
     })
     return await res.json()
   } catch {

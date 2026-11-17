@@ -58,6 +58,7 @@ async function tg(method: string, body: Record<string, unknown>): Promise<void> 
         ...(THREAD && CHAT === process.env.TELEGRAM_TOPIC_CHAT ? { message_thread_id: THREAD } : {}),
         ...body,
       }),
+      signal: AbortSignal.timeout(20_000),
     })
     if (!res.ok) log(`${method} failed: HTTP ${res.status}`)
   } catch (err) {

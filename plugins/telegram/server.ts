@@ -1070,7 +1070,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const file = await bot.api.getFile(file_id)
         if (!file.file_path) throw new Error('Telegram returned no file_path — file may have expired')
         const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`
-        const res = await fetch(url)
+        const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
         if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
         const buf = Buffer.from(await res.arrayBuffer())
         // file_path is from Telegram (trusted), but strip to safe chars anyway
@@ -1661,7 +1661,7 @@ bot.on('message:photo', async ctx => {
       const file = await ctx.api.getFile(best.file_id)
       if (!file.file_path) return undefined
       const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`
-      const res = await fetch(url)
+      const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
       const buf = Buffer.from(await res.arrayBuffer())
       const ext = file.file_path.split('.').pop() ?? 'jpg'
       const path = join(INBOX_DIR, `${Date.now()}-${best.file_unique_id}.${ext}`)

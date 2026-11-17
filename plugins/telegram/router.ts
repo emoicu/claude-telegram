@@ -42,6 +42,7 @@ const SOCKET = join(STATE_DIR, 'router.sock')
 const SLOTS_FILE = join(ROUTER_DIR, 'slots.json')
 const QUEUE_FILE = join(ROUTER_DIR, 'queue.json')
 const LOG_FILE = join(ROUTER_DIR, 'router.log')
+const OFFSET_FILE = join(ROUTER_DIR, 'offset')
 
 const CLAUDE_CMD = (
   process.env.TELEGRAM_ROUTER_CLAUDE ??
@@ -102,10 +103,14 @@ function tmux(...args: string[]): string {
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 async function api(method: string, body: Record<string, unknown> = {}): Promise<any> {
+  // A half-dead connection would otherwise hang the poll loop for good:
+  // allow a long poll its own timeout plus some slack, anything else 30s.
+  const limit = method === 'getUpdates' ? (Number(body.timeout ?? 0) + 20) * 1000 : 30_000
   const res = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(limit),
   })
   const json: any = await res.json().catch(() => ({ ok: false, description: `HTTP ${res.status}` }))
   if (!json.ok) throw Object.assign(new Error(`${method}: ${json.description}`), { code: json.error_code })
@@ -898,7 +903,20 @@ process.on('SIGTERM', () => process.exit(0))
 process.on('SIGINT', () => process.exit(0))
 
 ;(async () => {
+  // Telegram re-sends updates until a later getUpdates confirms them, so a
+  // restart right after handling one would handle it twice. Keep the
+  // offset on disk and save it after every update.
   let offset = 0
+  try {
+    offset = Number(readFileSync(OFFSET_FILE, 'utf8').trim()) || 0
+  } catch {}
+  const saveOffset = () => {
+    try {
+      writeFileSync(OFFSET_FILE, `${offset}\n`)
+    } catch (err) {
+      log(`saving offset failed: ${err}`)
+    }
+  }
   for (let attempt = 0; ; ) {
     try {
       const updates: any[] = await api('getUpdates', {
@@ -914,6 +932,7 @@ process.on('SIGINT', () => process.exit(0))
         } catch (err) {
           log(`update ${u.update_id} failed: ${err}`)
         }
+        saveOffset()
       }
     } catch (err: any) {
       attempt++

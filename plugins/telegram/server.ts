@@ -1279,14 +1279,79 @@ bot.command('start', async ctx => {
   )
 })
 
+// LOCAL PATCH: a full guide, built from what this install has turned on.
+// <state dir>/help.md, if present, is sent instead (e.g. a translation).
+function helpText(): string {
+  try {
+    const custom = readFileSync(join(STATE_DIR, 'help.md'), 'utf8').trim()
+    if (custom) return custom
+  } catch {}
+  const reactions = [...shortcuts()].map(([e, v]) => `${e} ${v.label || clip(v.meaning, 24)}`).join(' · ')
+  let business = false
+  try {
+    business = statSync(join(STATE_DIR, 'business.json')).isFile()
+  } catch {}
+  const out = [
+    '## 🤖 Claude Code on Telegram',
+    'Messages here go to a Claude Code session on your server. It can read and change code, run commands and search the web, and answers here.',
+    '',
+    '### 💬 Talking to it',
+    '- **Text, photos, files, voice** are passed on; **quote-reply** a message to point at it.',
+    '- While it works you see a live status with what it is doing; **Stop** interrupts the turn.',
+    '- Long tasks show a ✅ checklist that updates in place; a new message pings you when done.',
+    '- Questions arrive as **buttons**; permission prompts have **Allow / Deny**.',
+    '- Times are shown in **your own time zone**.',
+    '',
+    '### 👍 Reactions as shortcuts',
+    'React to one of its messages:',
+    reactions || '(none configured)',
+    '',
+    '### ⌨️ Commands',
+    '- `/session` model, effort, context size and cost of this session',
+    ...(COMMAND_HELPER
+      ? [
+          '- `/new` start a fresh conversation',
+          '- `/usage` plan usage and limits',
+          '- `/model [name]` switch model (no name: pick from buttons)',
+          '- `/effort [level]` reasoning effort (no level: pick from buttons)',
+        ]
+      : []),
+    ...(routed ? ['- `/sessions` every session, its state and memory'] : []),
+    ...(routed && business ? ['- `/business` Telegram Business settings', '- `/autoreply on|off` default reply mode for new customers'] : []),
+    '- `/status` pairing state · `/help` this guide',
+  ]
+  if (routed) {
+    out.push(
+      '',
+      '### 🗂 Topics: one session each',
+      '- In the forum group, **each topic is its own session** with its own memory; direct messages are the main session.',
+      '- A topic named like a project folder works in that folder.',
+      '- Sessions start on the first message and stop when idle; the next message resumes the same conversation.',
+      '- Close a topic to stop its session; `/sessions` lists them all.',
+    )
+  }
+  if (routed && business) {
+    out.push(
+      '',
+      '### 💼 Telegram Business',
+      '- People who message your connected account show up in the **💼 Customers** topic.',
+      '- **✋ confirm**: each reply comes as a draft; **Send** posts it as you, **Discard** drops it.',
+      '- **🤖 auto**: simple, safe replies go out by themselves; money, refunds, complaints, promises and anything unclear still come as drafts.',
+      '- Switch one customer with the button under their message, or everything in `/business`.',
+      '- Tell it facts in that topic ("ships within 48 h") and it uses them in replies.',
+    )
+  }
+  return out.join('\n')
+}
+
 bot.command('help', async ctx => {
   if (!dmCommandGate(ctx)) return
-  await ctx.reply(
-    `Messages you send here route to a paired Claude Code session. ` +
-    `Text and photos are forwarded; replies and reactions come back.\n\n` +
-    `/start — pairing instructions\n` +
-    `/status — check your pairing state`
-  )
+  const text = helpText()
+  try {
+    await sendRich(String(ctx.chat!.id), text)
+  } catch {
+    await ctx.reply(text.replace(/^#+ /gm, '').replace(/\*\*|`/g, '')).catch(() => {})
+  }
 })
 
 bot.command('status', async ctx => {

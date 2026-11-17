@@ -26,6 +26,10 @@
  *   TELEGRAM_ROUTER_MAX         hard cap on running sessions (default: no cap besides resources)
  *   TELEGRAM_ROUTER_RESERVE_MB  memory always left free (default: max(1024, 20% of RAM))
  *   TELEGRAM_ROUTER_SESSION_MB  memory per session until one is measured (default 500)
+ *   TELEGRAM_ROUTER_PROMPT_SNAPSHOT  passed as --system-prompt-snapshot (default off, so a resumed
+ *                               conversation gets the current plugin instructions; empty: Claude's default)
+ *   TELEGRAM_ROUTER_SELF_UPDATE 1: exit once a newer version of this plugin is installed, for a
+ *                               supervisor loop that restarts the router from the newest copy
  */
 import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
@@ -62,6 +66,13 @@ const DIALOG_WINDOW_MS = 120_000 // look for the development-channels dialog thi
 const START_TIMEOUT_MS = 120_000 // a session that has not connected by then is stuck
 const UPDATE_CHECK_MS = 10 * 60_000 // how often to look for a newer Claude Code on disk
 const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this much quiet
+// Claude Code records a conversation's system prompt (plugin instructions
+// included) once and replays it on --resume; off renders it fresh, so a
+// session resumed after a plugin update follows the new instructions.
+// Measured: the prompt cache still hits across resumes with it off.
+const PROMPT_SNAPSHOT = process.env.TELEGRAM_ROUTER_PROMPT_SNAPSHOT ?? 'off'
+const SELF_UPDATE = process.env.TELEGRAM_ROUTER_SELF_UPDATE === '1'
+const PLUGIN_ID = /plugin:(\S+)/.exec(CLAUDE_CMD.join(' '))?.[1]
 
 function tmuxSessionName(): string {
   if (process.env.TELEGRAM_ROUTER_TMUX) return process.env.TELEGRAM_ROUTER_TMUX
@@ -177,7 +188,8 @@ type Runtime = {
   dialogDone?: boolean
   status?: string
   version?: string // Claude Code version the session runs
-  updateTo?: string // stopped to pick up this version
+  updateTo?: string // stopped to pick up this update (e.g. "Claude Code 2.1.330")
+  plugin?: string // plugin version its server.ts runs, from its hello
   rssMB?: number
   quickExits: number
   gaveUp?: boolean
@@ -438,7 +450,7 @@ async function start(slot: Slot): Promise<void> {
   if (slot.sessionId && !resume.length) log(`${slot.name}: session ${slot.sessionId} is gone, starting fresh`)
   const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `${TMUX_SESSION}:`, '-n', displayName(slot), '-c', existsSync(slot.cwd) ? slot.cwd : MAIN_CWD]
   for (const [k, v] of Object.entries(sessionEnv(slot))) args.push('-e', `${k}=${v}`)
-  args.push(...CLAUDE_CMD, ...resume)
+  args.push(...CLAUDE_CMD, ...(PROMPT_SNAPSHOT ? ['--system-prompt-snapshot', PROMPT_SNAPSHOT] : []), ...resume)
   try {
     const id = tmux(...args).trim()
     tmux('set-option', '-w', '-t', id, '@slot', slot.name)
@@ -530,7 +542,7 @@ function deliver(slot: Slot, update: unknown): void {
   }
 }
 
-async function onHello(sock: Socket<SockData>, name: string): Promise<void> {
+async function onHello(sock: Socket<SockData>, name: string, plugin?: string): Promise<void> {
   const slot = slots.get(name)
   if (!slot) {
     log(`hello from unknown slot ${name}`)
@@ -539,6 +551,8 @@ async function onHello(sock: Socket<SockData>, name: string): Promise<void> {
   sock.data.slot = name
   const r = runtime(name)
   r.sock = sock
+  // Servers older than this check send no version: treat them as outdated.
+  r.plugin = plugin ?? 'older'
   r.dialogDone = true
   log(`${name}: session connected (${r.queue.length} queued)`)
   r.connected = true
@@ -571,7 +585,7 @@ Bun.listen<SockData>({
         if (!line.trim()) continue
         try {
           const msg = JSON.parse(line)
-          if (typeof msg.hello === 'string') void onHello(sock, msg.hello)
+          if (typeof msg.hello === 'string') void onHello(sock, msg.hello, typeof msg.plugin === 'string' ? msg.plugin : undefined)
         } catch {}
       }
     },
@@ -764,7 +778,7 @@ async function tick(): Promise<void> {
         log(`${slot.name}: stopped`)
         r.quickExits = 0
         if (r.updateTo && slot.pinned) {
-          void notify(slot, `🔄 Claude Code updated to ${r.updateTo}. Restarting this session to use it; it resumes the same conversation in a few seconds.`)
+          void notify(slot, `🔄 ${r.updateTo} is installed. Restarting this session to use it; it resumes the same conversation in a few seconds.`)
         }
         r.updateTo = undefined
       } else {
@@ -844,24 +858,56 @@ function isNewer(a: string, b: string): boolean {
 
 let lastUpdateCheck = Date.now()
 
+/** Version of this plugin that is installed now (what new sessions load). */
+function installedPlugin(): string | undefined {
+  if (!PLUGIN_ID) return undefined
+  try {
+    const all = JSON.parse(readFileSync(join(CLAUDE_DIR, 'plugins', 'installed_plugins.json'), 'utf8'))
+    return all.plugins?.[PLUGIN_ID]?.[0]?.version
+  } catch {
+    return undefined
+  }
+}
+
+/** Version of the plugin copy this router runs from. */
+const OWN_PLUGIN = (() => {
+  try {
+    return JSON.parse(readFileSync(join(import.meta.dir, '.claude-plugin', 'plugin.json'), 'utf8')).version as string
+  } catch {
+    return undefined
+  }
+})()
+
 /**
- * Claude Code updates itself on disk, but a running session keeps the old
- * version until it restarts. Topic sessions restart often anyway; this
+ * Claude Code and this plugin update on disk, but a running session keeps
+ * the old code until it restarts. Topic sessions restart often anyway; this
  * restarts any outdated session once it has been quiet for a while. main is
  * brought back right away (resuming its conversation), topics on their next
- * message.
+ * message. With TELEGRAM_ROUTER_SELF_UPDATE=1 the router itself exits for
+ * its supervisor to start the new copy; running sessions are adopted.
  */
 function checkForUpdate(): void {
   if (Date.now() - lastUpdateCheck < UPDATE_CHECK_MS) return
   lastUpdateCheck = Date.now()
   const latest = installedVersion()
-  if (!latest) return
+  const plugin = installedPlugin()
   for (const slot of running()) {
     const r = runtime(slot.name)
-    if (!r.version || !isNewer(latest, r.version) || r.stopping) continue
-    if (r.status !== 'idle' || r.queue.length || Date.now() - slot.lastActive < UPDATE_IDLE_MS) continue
-    r.updateTo = latest
-    stop(slot, `Claude Code ${r.version} → ${latest}`)
+    if (r.stopping || r.status !== 'idle' || r.queue.length || Date.now() - slot.lastActive < UPDATE_IDLE_MS) continue
+    const update =
+      latest && r.version && isNewer(latest, r.version) ? `Claude Code ${latest}` :
+      plugin && r.plugin && plugin !== r.plugin ? `Telegram plugin ${plugin}` :
+      undefined
+    if (!update) continue
+    r.updateTo = update
+    stop(slot, `${update} (was ${update.startsWith('Claude') ? r.version : r.plugin})`)
+  }
+  if (SELF_UPDATE && plugin && OWN_PLUGIN && plugin !== OWN_PLUGIN) {
+    log(`plugin ${plugin} installed (router runs ${OWN_PLUGIN}), exiting for the supervisor to restart it`)
+    dirty = true
+    saveSlots()
+    saveQueue()
+    process.exit(0)
   }
 }
 

@@ -2333,7 +2333,7 @@ function connectRouter(): void {
     unix: ROUTER_SOCKET!,
     socket: {
       open(sock) {
-        sock.write(JSON.stringify({ hello: SLOT, pid: process.pid }) + '\n')
+        sock.write(JSON.stringify({ hello: SLOT, pid: process.pid, plugin: pluginVersion() }) + '\n')
         process.stderr.write(`telegram channel: connected to router as ${SLOT}\n`)
       },
       data(_sock, chunk) {

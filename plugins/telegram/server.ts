@@ -1373,7 +1373,7 @@ function helpText(): string {
       '- **✋ confirm**: each reply comes as a draft; **Send** posts it as you, **Discard** drops it.',
       '- **🤖 auto**: simple, safe replies go out by themselves; money, refunds, complaints, promises and anything unclear still come as drafts.',
       '- Switch one customer with the button under their message, or everything in `/business`.',
-      '- Tell it facts in that topic ("ships within 48 h") and it uses them in replies.',
+      '- Say things for one customer in their topic; rules for everyone (prices, shipping) go in `business-faq.md` in the state folder, which every customer session reads.',
     )
   }
   return out.join('\n')

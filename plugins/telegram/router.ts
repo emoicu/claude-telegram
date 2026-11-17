@@ -26,7 +26,7 @@
  *   TELEGRAM_ROUTER_MAX         hard cap on running sessions (default: no cap besides resources)
  *   TELEGRAM_ROUTER_RESERVE_MB  memory always left free (default: max(1024, 20% of RAM))
  *   TELEGRAM_ROUTER_SESSION_MB  memory per session until one is measured (default 500)
- *   TELEGRAM_BUSINESS_TOOLS     built-in tools of the customers' topic session (default none; see business.ts)
+ *   TELEGRAM_BUSINESS_TOOLS     built-in tools of the customers' topic session (default ToolSearch only; see business.ts)
  *   TELEGRAM_BUSINESS_DENY      tools it must not use (default mcp__claude_ai_*, the claude.ai connectors)
  */
 import { execFileSync } from 'child_process'
@@ -64,9 +64,9 @@ const DIALOG_WINDOW_MS = 120_000 // look for the development-channels dialog thi
 const START_TIMEOUT_MS = 120_000 // a session that has not connected by then is stuck
 const UPDATE_CHECK_MS = 10 * 60_000 // how often to look for a newer Claude Code on disk
 const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this much quiet
-// Customer text is untrusted, so the customers' topic session gets no
-// built-in tools unless this names some (e.g. "Read").
-const BUSINESS_TOOLS = process.env.TELEGRAM_BUSINESS_TOOLS ?? ''
+// Customer text is untrusted, so the customers' topic session gets only
+// ToolSearch, which it needs to load the plugin's (deferred) MCP tools.
+const BUSINESS_TOOLS = process.env.TELEGRAM_BUSINESS_TOOLS ?? 'ToolSearch'
 // …and none of the claude.ai connectors (docs, mail…) the account may have.
 const BUSINESS_DENY = process.env.TELEGRAM_BUSINESS_DENY ?? 'mcp__claude_ai_*'
 

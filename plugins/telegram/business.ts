@@ -13,7 +13,8 @@
  *     press them, and the router handles them itself, never Claude.
  *   - Customer messages from allowed accounts go to one forum topic
  *     ("💼 Customers") whose session runs with built-in tools turned off
- *     (TELEGRAM_BUSINESS_TOOLS, default none): customer text is untrusted.
+ *     except ToolSearch (TELEGRAM_BUSINESS_TOOLS), which it needs to load
+ *     the plugin's deferred MCP tools: customer text is untrusted.
  *   - That session drafts with the business_draft tool (server.ts). The
  *     draft is posted in the topic with ✅ Send / ❌ Discard buttons, again
  *     handled by the router, so a draft can be sent even after the session

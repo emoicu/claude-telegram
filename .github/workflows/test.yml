@@ -1,0 +1,22 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/telegram
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun test lib/
+      - name: Syntax check
+        run: |
+          for f in server.ts router.ts hooks/*.ts helpers/*.ts; do
+            bun build "$f" --target=bun --outdir "$RUNNER_TEMP/build" > /dev/null
+          done

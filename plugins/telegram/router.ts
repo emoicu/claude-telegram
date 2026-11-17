@@ -69,6 +69,14 @@ const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this
 const BUSINESS_TOOLS = process.env.TELEGRAM_BUSINESS_TOOLS ?? 'ToolSearch'
 // …and none of the claude.ai connectors (docs, mail…) the account may have.
 const BUSINESS_DENY = process.env.TELEGRAM_BUSINESS_DENY ?? 'mcp__claude_ai_*'
+// Claude Code records the system prompt once per conversation and replays
+// it on --resume, which would keep the customers' session on the reply
+// rules and FAQ it first started with. Rebuild it on every start instead.
+const businessArgs = () => [
+  '--tools', BUSINESS_TOOLS,
+  ...(BUSINESS_DENY ? ['--disallowedTools', BUSINESS_DENY] : []),
+  '--system-prompt-snapshot', 'off',
+]
 
 function tmuxSessionName(): string {
   if (process.env.TELEGRAM_ROUTER_TMUX) return process.env.TELEGRAM_ROUTER_TMUX
@@ -443,7 +451,7 @@ async function start(slot: Slot): Promise<void> {
   if (slot.sessionId && !resume.length) log(`${slot.name}: session ${slot.sessionId} is gone, starting fresh`)
   const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `${TMUX_SESSION}:`, '-n', displayName(slot), '-c', existsSync(slot.cwd) ? slot.cwd : MAIN_CWD]
   for (const [k, v] of Object.entries(sessionEnv(slot))) args.push('-e', `${k}=${v}`)
-  args.push(...CLAUDE_CMD, ...(slot.business ? ['--tools', BUSINESS_TOOLS, ...(BUSINESS_DENY ? ['--disallowedTools', BUSINESS_DENY] : [])] : []), ...resume)
+  args.push(...CLAUDE_CMD, ...(slot.business ? businessArgs() : []), ...resume)
   try {
     const id = tmux(...args).trim()
     tmux('set-option', '-w', '-t', id, '@slot', slot.name)

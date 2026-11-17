@@ -36,6 +36,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { cpus, homedir, loadavg } from 'os'
 import { basename, join } from 'path'
 import type { Socket } from 'bun'
+import { isNewer } from './lib/version.ts'
 
 // ---- config ---------------------------------------------------------------
 
@@ -847,14 +848,6 @@ function installedVersion(): string | undefined {
   return undefined
 }
 
-function isNewer(a: string, b: string): boolean {
-  const pa = a.split(/[.-]/).map(Number)
-  const pb = b.split(/[.-]/).map(Number)
-  for (let i = 0; i < 3; i++) {
-    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0)
-  }
-  return false
-}
 
 let lastUpdateCheck = Date.now()
 

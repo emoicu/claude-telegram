@@ -4,6 +4,7 @@ A personally maintained fork of the official Claude Code Telegram channel plugin
 
 - Upstream: `external_plugins/telegram` in [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)
 - Based on: upstream plugin v0.0.7 (commit `b5b01ac`)
+- Upstream check: `scripts/check-upstream.sh` lists upstream changes to the plugin since that base (the last one, `1e96c6b` of 2026-08-13, is already included). Every local change is listed under [Changes from upstream](#changes-from-upstream) and marked `LOCAL PATCH` in the code.
 - License: Apache-2.0, see [LICENSE](LICENSE)
 
 ## Install

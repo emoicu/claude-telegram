@@ -597,6 +597,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             items: { type: 'string' },
             description: 'Absolute file paths to attach. Images send as photos (inline preview); other types as documents. Max 50MB each.',
           },
+          effect: {
+            type: 'string',
+            enum: ['🎉', '🔥', '👍', '❤️', 'none'],
+            description: 'Message effect animation (direct messages only). The reply right after a progress checklist finishes gets 🎉 automatically; pass none to skip it, or another effect for a finished task worth it. Leave out otherwise.',
+          },
           format: {
             type: 'string',
             enum: ['text', 'markdownv2', 'rich'],
@@ -677,6 +682,16 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 }))
 
 const RICH_LIMIT = 32768
+
+// LOCAL PATCH: message effects (private chats only). The reply right after
+// a progress checklist finishes gets 🎉 unless it names another effect.
+const EFFECTS: Record<string, string> = {
+  '🎉': '5046509860389126442',
+  '🔥': '5104841245755180586',
+  '👍': '5107584321108051014',
+  '❤️': '5159385139981059251',
+}
+const celebrate = new Set<string>() // chats whose checklist just finished
 
 // LOCAL PATCH: reaction shortcuts. A reaction from the user on one of our
 // messages becomes a short instruction to Claude, quoting the start of that
@@ -861,6 +876,7 @@ async function showProgress(chat: string, title: string | undefined, steps: Step
       }
       all[chat] = { ...cur, finished }
       saveChecklists(all)
+      if (finished && !cur.finished) celebrate.add(chat)
       return `updated checklist (id: ${cur.id})`
     } catch (err) {
       if (/not modified/i.test(String(err))) return `checklist unchanged (id: ${cur.id})`
@@ -882,12 +898,16 @@ async function showProgress(chat: string, title: string | undefined, steps: Step
 }
 
 /** Send a Bot API 10.1 rich message written in GitHub-flavored Markdown. */
-async function sendRich(chat_id: string, markdown: string, replyTo?: number): Promise<{ message_id: number }> {
-  return (bot.api.raw as any).sendRichMessage({
-    chat_id,
-    rich_message: { markdown },
-    ...(replyTo != null ? { reply_parameters: { message_id: replyTo } } : {}),
-  })
+async function sendRich(chat_id: string, markdown: string, replyTo?: number, effect?: string): Promise<{ message_id: number }> {
+  const send = (fx?: string) =>
+    (bot.api.raw as any).sendRichMessage({
+      chat_id,
+      rich_message: { markdown },
+      ...(replyTo != null ? { reply_parameters: { message_id: replyTo } } : {}),
+      ...(fx ? { message_effect_id: fx } : {}),
+    })
+  // An effect is decoration: never lose the message over it.
+  return effect ? send(effect).catch(() => send()) : send()
 }
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
@@ -916,6 +936,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const access = loadAccess()
         const replyMode = access.replyToMode ?? 'first'
         const sentIds: number[] = []
+        const wanted = typeof args.effect === 'string' ? args.effect : undefined
+        let effect = isPrivateChat(chat_id)
+          ? (wanted && wanted !== 'none' ? EFFECTS[wanted] : wanted == null && celebrate.has(chat_id) ? EFFECTS['🎉'] : undefined)
+          : undefined
+        celebrate.delete(chat_id)
+        const takeEffect = () => {
+          const fx = effect
+          effect = undefined // first message only
+          return fx
+        }
 
         // LOCAL PATCH: rich messages (Bot API 10.1) take GitHub-flavored
         // Markdown up to 32768 characters. If Telegram rejects one, fall back
@@ -926,7 +956,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           try {
             for (let i = 0; i < parts.length; i++) {
               const shouldReplyTo = reply_to != null && replyMode !== 'off' && (replyMode === 'all' || i === 0)
-              const sent = await sendRich(chat_id, parts[i]!, shouldReplyTo ? reply_to : undefined)
+              const sent = await sendRich(chat_id, parts[i]!, shouldReplyTo ? reply_to : undefined, i === 0 ? takeEffect() : undefined)
               sentIds.push(sent.message_id)
             }
           } catch (err) {
@@ -945,10 +975,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
               reply_to != null &&
               replyMode !== 'off' &&
               (replyMode === 'all' || i === 0)
-            const sent = await bot.api.sendMessage(chat_id, chunks[i], {
+            const opts = {
               ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
               ...(parseMode ? { parse_mode: parseMode } : {}),
-            })
+            }
+            const fx = i === 0 ? takeEffect() : undefined
+            const sent = fx
+              ? await bot.api.sendMessage(chat_id, chunks[i], { ...opts, message_effect_id: fx }).catch(() => bot.api.sendMessage(chat_id, chunks[i], opts))
+              : await bot.api.sendMessage(chat_id, chunks[i], opts)
             sentIds.push(sent.message_id)
           }
         } catch (err) {
@@ -960,18 +994,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         // Files go as separate messages (Telegram doesn't mix text+file in one
         // sendMessage call). Thread under reply_to if present.
-        for (const f of files) {
-          const ext = extname(f).toLowerCase()
-          const input = new InputFile(f)
-          const opts = reply_to != null && replyMode !== 'off'
-            ? { reply_parameters: { message_id: reply_to } }
-            : undefined
-          if (PHOTO_EXTS.has(ext)) {
-            const sent = await bot.api.sendPhoto(chat_id, input, opts)
-            sentIds.push(sent.message_id)
-          } else {
-            const sent = await bot.api.sendDocument(chat_id, input, opts)
-            sentIds.push(sent.message_id)
+        // LOCAL PATCH: two or more photos (or documents) go as one album of
+        // up to 10; Telegram does not mix photos and documents in one.
+        const opts = reply_to != null && replyMode !== 'off'
+          ? { reply_parameters: { message_id: reply_to } }
+          : undefined
+        const photos = files.filter(f => PHOTO_EXTS.has(extname(f).toLowerCase()))
+        const docs = files.filter(f => !PHOTO_EXTS.has(extname(f).toLowerCase()))
+        for (const [kind, group] of [['photo', photos], ['document', docs]] as const) {
+          for (let i = 0; i < group.length; i += 10) {
+            const batch = group.slice(i, i + 10)
+            if (batch.length === 1) {
+              const input = new InputFile(batch[0]!)
+              const sent = kind === 'photo' ? await bot.api.sendPhoto(chat_id, input, opts) : await bot.api.sendDocument(chat_id, input, opts)
+              sentIds.push(sent.message_id)
+              continue
+            }
+            const sent = await bot.api.sendMediaGroup(chat_id, batch.map(f => ({ type: kind, media: new InputFile(f) })), opts)
+            sentIds.push(...sent.map(m => m.message_id))
           }
         }
 
@@ -980,6 +1020,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             ? `sent (id: ${sentIds[0]})`
             : `sent ${sentIds.length} parts (ids: ${sentIds.join(', ')})`
         noteStatusReply(chat_id)
+        if (REACTION_STATUS) settleWaiting(chat_id)
         if (sentIds.length) {
           rememberSent(chat_id, sentIds, expandTimes(rawText, 'text'))
           void attachQuick(chat_id, sentIds[sentIds.length - 1]!)
@@ -1726,7 +1767,10 @@ async function handleInbound(
   // Ack reaction — lets the user know we're processing. Fire-and-forget.
   // Telegram only accepts a fixed emoji whitelist — if the user configures
   // something outside that set the API rejects it and we swallow.
-  if (access.ackReaction && msgId != null) {
+  // LOCAL PATCH: with reaction status on, the reaction tracks the turn
+  // instead (👀 received → ✍ working → 👍 done), see noteReceived().
+  if (REACTION_STATUS && msgId != null) noteReceived(chat_id, msgId)
+  else if (access.ackReaction && msgId != null) {
     void bot.api
       .setMessageReaction(chat_id, msgId, [
         { type: 'emoji', emoji: access.ackReaction as ReactionTypeEmoji['emoji'] },
@@ -1831,6 +1875,7 @@ type Work = {
   draftId?: number // set while the status is a draft
   draftFailed?: boolean // drafts unsupported here: use a message
   stopped?: boolean // the user pressed Stop for this turn
+  acks: { chat: string; id: number }[] // user messages this turn answers (reaction status)
 }
 
 // Chat that receives status updates: the last allowlisted chat that messaged
@@ -1949,7 +1994,50 @@ function interruptClaude(): string | undefined {
 
 // The status message is scaffolding: once the turn ends it is deleted so the
 // chat only keeps Claude's real replies.
+// LOCAL PATCH: reaction status. The user's message itself shows where it
+// is: 👀 received, ✍ while Claude works on it, 👍 once the turn is over
+// (cleared if the user stopped it). Messages that arrive mid-turn join the
+// running turn. TELEGRAM_REACTION_STATUS=off keeps the plain ackReaction.
+// Needs the busy/idle tracking of the live status.
+const REACTION_STATUS = STATUS_ENABLED && process.env.TELEGRAM_REACTION_STATUS !== 'off'
+type Ack = { chat: string; id: number }
+let waitingAcks: Ack[] = [] // received while no turn was running
+
+function setReaction(a: Ack, emoji?: string): void {
+  void bot.api
+    .setMessageReaction(a.chat, a.id, emoji ? [{ type: 'emoji', emoji: emoji as ReactionTypeEmoji['emoji'] }] : [])
+    .catch(() => {})
+}
+
+function noteReceived(chat: string, id: number): void {
+  const a = { chat, id }
+  if (work && work.chat === chat) {
+    work.acks.push(a)
+    setReaction(a, '✍')
+    return
+  }
+  waitingAcks = [...waitingAcks.filter(x => x.chat === chat), a].slice(-20)
+  setReaction(a, '👀')
+}
+
+/**
+ * A reply while no turn is being tracked (a turn too short for the 2 s
+ * status poll to see): the messages waiting in that chat are answered.
+ */
+function settleWaiting(chat: string): void {
+  if (work?.chat === chat) return
+  for (const a of waitingAcks.filter(x => x.chat === chat)) setReaction(a, '👍')
+  waitingAcks = waitingAcks.filter(x => x.chat !== chat)
+}
+
+function startAcks(w: Work): void {
+  w.acks = waitingAcks.filter(a => a.chat === w.chat)
+  waitingAcks = waitingAcks.filter(a => a.chat !== w.chat)
+  for (const a of w.acks) setReaction(a, '✍')
+}
+
 async function finishWork(w: Work): Promise<void> {
+  for (const a of w.acks) setReaction(a, w.stopped ? undefined : '👍')
   if (w.msgId == null) return
   await bot.api.deleteMessage(w.chat, w.msgId).catch(() => {})
 }
@@ -1978,7 +2066,9 @@ async function statusTick(): Promise<void> {
       lastEdit: 0,
       lastTyping: 0,
       idleTicks: 0,
+      acks: [],
     }
+    startAcks(work)
   }
   const w = work
   w.idleTicks = 0

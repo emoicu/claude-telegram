@@ -26,12 +26,15 @@
  *   TELEGRAM_ROUTER_MAX         hard cap on running sessions (default: no cap besides resources)
  *   TELEGRAM_ROUTER_RESERVE_MB  memory always left free (default: max(1024, 20% of RAM))
  *   TELEGRAM_ROUTER_SESSION_MB  memory per session until one is measured (default 500)
+ *   TELEGRAM_BUSINESS_TOOLS     built-in tools of the customers' topic session (default none; see business.ts)
+ *   TELEGRAM_BUSINESS_DENY      tools it must not use (default mcp__claude_ai_*, the claude.ai connectors)
  */
 import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { cpus, homedir, loadavg } from 'os'
 import { basename, join } from 'path'
 import type { Socket } from 'bun'
+import { BUSINESS_UPDATES, handleBusinessCallback, handleBusinessUpdate, type RouterHooks } from './business.ts'
 
 // ---- config ---------------------------------------------------------------
 
@@ -61,6 +64,11 @@ const DIALOG_WINDOW_MS = 120_000 // look for the development-channels dialog thi
 const START_TIMEOUT_MS = 120_000 // a session that has not connected by then is stuck
 const UPDATE_CHECK_MS = 10 * 60_000 // how often to look for a newer Claude Code on disk
 const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this much quiet
+// Customer text is untrusted, so the customers' topic session gets no
+// built-in tools unless this names some (e.g. "Read").
+const BUSINESS_TOOLS = process.env.TELEGRAM_BUSINESS_TOOLS ?? ''
+// …and none of the claude.ai connectors (docs, mail…) the account may have.
+const BUSINESS_DENY = process.env.TELEGRAM_BUSINESS_DENY ?? 'mcp__claude_ai_*'
 
 function tmuxSessionName(): string {
   if (process.env.TELEGRAM_ROUTER_TMUX) return process.env.TELEGRAM_ROUTER_TMUX
@@ -163,6 +171,7 @@ type Slot = {
   lastActive: number
   pinned?: boolean // never stopped for being idle (main)
   closed?: boolean // topic closed in Telegram
+  business?: boolean // the Telegram Business customers' topic
 }
 
 type Runtime = {
@@ -399,6 +408,7 @@ function sessionEnv(slot: Slot): Record<string, string> {
     env.TELEGRAM_TOPIC_THREAD = String(slot.thread)
     if (slot.title) env.TELEGRAM_TOPIC_TITLE = slot.title
   }
+  if (slot.business) env.TELEGRAM_BUSINESS = '1'
   return env
 }
 
@@ -433,7 +443,7 @@ async function start(slot: Slot): Promise<void> {
   if (slot.sessionId && !resume.length) log(`${slot.name}: session ${slot.sessionId} is gone, starting fresh`)
   const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `${TMUX_SESSION}:`, '-n', displayName(slot), '-c', existsSync(slot.cwd) ? slot.cwd : MAIN_CWD]
   for (const [k, v] of Object.entries(sessionEnv(slot))) args.push('-e', `${k}=${v}`)
-  args.push(...CLAUDE_CMD, ...resume)
+  args.push(...CLAUDE_CMD, ...(slot.business ? ['--tools', BUSINESS_TOOLS, ...(BUSINESS_DENY ? ['--disallowedTools', BUSINESS_DENY] : [])] : []), ...resume)
   try {
     const id = tmux(...args).trim()
     tmux('set-option', '-w', '-t', id, '@slot', slot.name)
@@ -586,9 +596,31 @@ Bun.listen<SockData>({
 /** Messages Claude should see; service messages (topic created…) are not. */
 const ACTIONABLE = ['text', 'photo', 'document', 'voice', 'audio', 'video', 'video_note', 'sticker']
 
+const businessHooks: RouterHooks = {
+  stateDir: STATE_DIR,
+  api,
+  log,
+  owners: () => loadAccess().allowFrom,
+  forumChat: () => [...slots.values()].find(s => s.chat)?.chat ?? Object.keys(loadAccess().groups)[0],
+  topicExists: thread => slots.has(`t${thread}`),
+  async route(chat, thread, title, update) {
+    const slot = topicSlot(chat, thread, title)
+    if (!slot.business || slot.closed) {
+      slot.business = true
+      slot.closed = false
+      dirty = true
+    }
+    deliver(slot, update)
+    if (!alive(runtime(slot.name).pid)) await wake(slot)
+  },
+}
+
 async function handleUpdate(u: any): Promise<void> {
+  if (await handleBusinessUpdate(u, businessHooks)) return
   const msg = u.message ?? u.edited_message
   const cq = u.callback_query
+  // Business approval buttons work even when no session is running.
+  if (cq && (await handleBusinessCallback(cq, businessHooks))) return
   // Reactions carry no topic: offer them to every running session of that
   // group; each one ignores reactions on messages it did not send.
   if (u.message_reaction) {
@@ -904,7 +936,7 @@ process.on('SIGINT', () => process.exit(0))
       const updates: any[] = await api('getUpdates', {
         offset,
         timeout: 30,
-        allowed_updates: ['message', 'edited_message', 'callback_query', 'message_reaction', 'stopped_message_generation'],
+        allowed_updates: ['message', 'edited_message', 'callback_query', 'message_reaction', 'stopped_message_generation', ...BUSINESS_UPDATES],
       })
       attempt = 0
       for (const u of updates) {

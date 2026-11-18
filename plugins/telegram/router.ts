@@ -36,6 +36,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { cpus, homedir, loadavg } from 'node:os'
 import { basename, join } from 'node:path'
 import type { Socket } from 'bun'
+import { createLogger, parseLevel } from './lib/log.ts'
 import { isNewer } from './lib/version.ts'
 
 // ---- config ---------------------------------------------------------------
@@ -80,7 +81,9 @@ function tmuxSessionName(): string {
   if (process.env.TMUX) {
     try {
       return tmux('display-message', '-p', '#{session_name}').trim()
-    } catch {}
+    } catch (err) {
+      ignored('read the tmux session name', err)
+    }
   }
   return 'claude'
 }
@@ -100,12 +103,21 @@ const TOKEN = readToken()
 
 mkdirSync(ROUTER_DIR, { recursive: true, mode: 0o700 })
 
+// Leveled log to stderr and router/router.log (rotated at 1 MiB).
+// TELEGRAM_LOG_LEVEL=debug also shows errors that are expected and ignored.
+const logger = createLogger('telegram router', { level: parseLevel(process.env.TELEGRAM_LOG_LEVEL), file: LOG_FILE })
+
 function log(msg: string): void {
-  const line = `[${new Date().toISOString()}] ${msg}\n`
-  process.stderr.write(line)
-  try {
-    writeFileSync(LOG_FILE, line, { flag: 'a' })
-  } catch {}
+  logger.info(msg)
+}
+
+/** Log an error the router deliberately carries on after: a missing file or a
+ *  missing tmux target is normal (debug); anything else is a warning. */
+function ignored(what: string, err: unknown): void {
+  const code = (err as { code?: unknown })?.code
+  const text = String((err as { message?: unknown })?.message ?? err)
+  if (code === 'ENOENT' || code === 'ESRCH' || /can't find|no server running|not found/i.test(text)) logger.debug(what, err)
+  else logger.warn(what, err)
 }
 
 function tmux(...args: string[]): string {
@@ -220,7 +232,9 @@ function runtime(name: string): Runtime {
 function loadSlots(): void {
   try {
     for (const s of JSON.parse(readFileSync(SLOTS_FILE, 'utf8')) as Slot[]) slots.set(s.name, s)
-  } catch {}
+  } catch (err) {
+    ignored('load slots.json', err)
+  }
   if (!slots.has('main')) slots.set('main', { name: 'main', cwd: MAIN_CWD, lastActive: Date.now(), pinned: true })
   const main = slots.get('main')!
   main.pinned = true
@@ -232,7 +246,9 @@ function loadSlots(): void {
       if (f === 'resume-once') rmSync(p)
       if (sid && !main.sessionId) main.sessionId = sid
       if (sid && f === 'resume-once') main.sessionId = sid
-    } catch {}
+    } catch (err) {
+      ignored(`read ${f}`, err)
+    }
   }
 }
 
@@ -266,7 +282,9 @@ function cwdFor(title?: string): string {
     const dir = join(PROJECTS, title)
     try {
       if (statSync(dir).isDirectory()) return dir
-    } catch {}
+    } catch (err) {
+      ignored(`check folder ${dir}`, err)
+    }
   }
   return PROJECTS
 }
@@ -382,7 +400,9 @@ function windowOf(name: string): { id: string; pid: number } | undefined {
       const [id, tag, wname, pid] = line.split('\t')
       if (id && (tag === name || (!tag && wname === name))) return { id, pid: Number(pid) }
     }
-  } catch {}
+  } catch (err) {
+    ignored('list tmux windows', err)
+  }
   return undefined
 }
 const windowPid = (name: string) => windowOf(name)?.pid
@@ -402,7 +422,9 @@ function renameWindow(slot: Slot): void {
   try {
     tmux('rename-window', '-t', w.id, displayName(slot))
     tmux('set-option', '-w', '-t', w.id, '@slot', slot.name)
-  } catch {}
+  } catch (err) {
+    ignored('tag tmux window', err)
+  }
 }
 
 /** Environment for a session: our TELEGRAM_* settings plus its slot binding. */
@@ -437,7 +459,9 @@ function clearFailedMark(): void {
     for (const k of keys) delete cache[k]
     writeFileSync(file, JSON.stringify(cache))
     log(`cleared failed-start mark for ${keys.join(', ')}`)
-  } catch {}
+  } catch (err) {
+    ignored('clear failed-start mark', err)
+  }
 }
 
 async function start(slot: Slot): Promise<void> {
@@ -447,7 +471,9 @@ async function start(slot: Slot): Promise<void> {
   if (stale) {
     try {
       tmux('kill-window', '-t', stale.id)
-    } catch {}
+    } catch (err) {
+      ignored('kill stale tmux window', err)
+    }
   }
   clearFailedMark()
   const resume = validSession(slot.sessionId) ? ['--resume', slot.sessionId!] : []
@@ -476,7 +502,9 @@ function stop(slot: Slot, why: string): void {
   log(`${slot.name}: stopping pid ${r.pid} (${why})`)
   try {
     process.kill(r.pid!, 'SIGTERM')
-  } catch {}
+  } catch (err) {
+    ignored(`stop ${slot.name}`, err)
+  }
 }
 
 /** Press Enter on Claude Code's "Loading development channels" dialog. */
@@ -493,7 +521,9 @@ function confirmDialog(slot: Slot, r: Runtime): void {
       tmux('send-keys', '-t', windowTarget(slot.name), 'Enter')
       r.dialogDone = true
       log(`${slot.name}: confirmed the development-channels dialog`)
-    } catch {}
+    } catch (err) {
+      ignored('confirm the development-channels dialog', err)
+    }
   }
 }
 
@@ -532,7 +562,9 @@ function loadQueue(): void {
       runtime(name).queue.push(...updates)
       log(`${name}: ${updates.length} queued update(s) restored`)
     }
-  } catch {}
+  } catch (err) {
+    ignored('restore queue.json', err)
+  }
 }
 
 function deliver(slot: Slot, update: unknown): void {
@@ -576,7 +608,9 @@ Bun.listen<SockData>({
   unix: (() => {
     try {
       rmSync(SOCKET)
-    } catch {}
+    } catch (err) {
+      ignored('remove old router socket', err)
+    }
     return SOCKET
   })(),
   socket: {
@@ -590,7 +624,9 @@ Bun.listen<SockData>({
         try {
           const msg = JSON.parse(line)
           if (typeof msg.hello === 'string') void onHello(sock, msg.hello, typeof msg.plugin === 'string' ? msg.plugin : undefined)
-        } catch {}
+        } catch (err) {
+          logger.warn('unreadable line from a session', err)
+        }
       }
     },
     drain(sock) {
@@ -814,7 +850,9 @@ async function startTimedOut(slot: Slot, r: Runtime): Promise<void> {
   try {
     screen = tmux('capture-pane', '-p', '-t', windowTarget(slot.name))
       .split('\n').filter(l => l.trim()).slice(-8).join('\n')
-  } catch {}
+  } catch (err) {
+    ignored('capture pane after a timed-out start', err)
+  }
   const again = !r.startRetried
   log(`${slot.name}: not connected after ${START_TIMEOUT_MS / 1000}s${again ? ', restarting once' : ', giving up'}`)
   await notify(
@@ -843,11 +881,15 @@ function installedVersion(): string | undefined {
     // The native installer links `claude` to …/versions/<version>.
     const name = basename(realpathSync(CLAUDE_CMD[0]!))
     if (/^\d+\.\d+\.\d+/.test(name)) return name
-  } catch {}
+  } catch (err) {
+    ignored('read Claude Code version from its path', err)
+  }
   try {
     const out = execFileSync(CLAUDE_CMD[0]!, ['--version'], { encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'ignore'] })
     return /(\d+\.\d+\.\d+)/.exec(out)?.[1]
-  } catch {}
+  } catch (err) {
+    ignored('run claude --version', err)
+  }
   return undefined
 }
 
@@ -951,7 +993,9 @@ process.on('SIGINT', () => process.exit(0))
   let offset = 0
   try {
     offset = Number(readFileSync(OFFSET_FILE, 'utf8').trim()) || 0
-  } catch {}
+  } catch (err) {
+    ignored('read poll offset', err)
+  }
   const saveOffset = () => {
     try {
       writeFileSync(OFFSET_FILE, `${offset}\n`)

@@ -52,9 +52,9 @@ export function expandTimes(text: string, mode: 'text' | 'markdownv2' | 'rich'):
     const near = Math.abs(unix - Date.now() / 1000) < 20 * 3600
     const format = rawFormat != null && TIME_FORMAT.test(rawFormat.trim()) ? rawFormat.trim() : near ? 't' : 'dt'
     const iso = new Date(unix * 1000).toISOString()
-    const label = `${near ? '' : iso.slice(0, 10) + ' '}${iso.slice(11, 16)} UTC`
+    const label = `${near ? '' : `${iso.slice(0, 10)} `}${iso.slice(11, 16)} UTC`
     if (mode === 'text') return label
-    const shown = mode === 'markdownv2' ? label.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, m => '\\' + m) : label
+    const shown = mode === 'markdownv2' ? label.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, m => `\\${m}`) : label
     return `![${shown}](tg://time?unix=${unix}${format ? `&format=${format}` : ''})`
   })
 }
@@ -100,12 +100,12 @@ export function fmtDuration(ms: number): string {
 }
 
 export function safeName(s: string | undefined): string | undefined {
-  return s?.replace(/[<>\[\]\r\n;]/g, '_')
+  return s?.replace(/[<>[\]\r\n;]/g, '_')
 }
 
 export function clip(s: string, n: number): string {
   const one = s.replace(/\s+/g, ' ').trim()
-  return one.length > n ? one.slice(0, n - 1) + '…' : one
+  return one.length > n ? `${one.slice(0, n - 1)}…` : one
 }
 
 export function describeTool(name: string, input: Record<string, unknown>): string {

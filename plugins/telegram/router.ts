@@ -31,10 +31,10 @@
  *   TELEGRAM_ROUTER_SELF_UPDATE 1: exit once a newer version of this plugin is installed, for a
  *                               supervisor loop that restarts the router from the newest copy
  */
-import { execFileSync } from 'child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
-import { cpus, homedir, loadavg } from 'os'
-import { basename, join } from 'path'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpus, homedir, loadavg } from 'node:os'
+import { basename, join } from 'node:path'
 import type { Socket } from 'bun'
 import { isNewer } from './lib/version.ts'
 
@@ -210,7 +210,10 @@ let dirty = false
 
 function runtime(name: string): Runtime {
   let r = rt.get(name)
-  if (!r) rt.set(name, (r = { startedAt: 0, quickExits: 0, queue: [] }))
+  if (!r) {
+    r = { startedAt: 0, quickExits: 0, queue: [] }
+    rt.set(name, r)
+  }
   return r
 }
 
@@ -236,8 +239,8 @@ function loadSlots(): void {
 function saveSlots(): void {
   if (!dirty) return
   dirty = false
-  const tmp = SLOTS_FILE + '.tmp'
-  writeFileSync(tmp, JSON.stringify([...slots.values()], null, 2) + '\n', { mode: 0o600 })
+  const tmp = `${SLOTS_FILE}.tmp`
+  writeFileSync(tmp, `${JSON.stringify([...slots.values()], null, 2)}\n`, { mode: 0o600 })
   renameSync(tmp, SLOTS_FILE)
 }
 
@@ -497,7 +500,7 @@ function confirmDialog(slot: Slot, r: Runtime): void {
 // ---- delivery -------------------------------------------------------------
 
 function send(sock: Socket<SockData>, obj: unknown): void {
-  sock.data.out += JSON.stringify(obj) + '\n'
+  sock.data.out += `${JSON.stringify(obj)}\n`
   flush(sock)
 }
 
@@ -513,8 +516,8 @@ function saveQueue(): void {
   for (const [name, r] of rt) if (r.queue.length) all[name] = r.queue
   try {
     if (Object.keys(all).length) {
-      writeFileSync(QUEUE_FILE + '.tmp', JSON.stringify(all), { mode: 0o600 })
-      renameSync(QUEUE_FILE + '.tmp', QUEUE_FILE)
+      writeFileSync(`${QUEUE_FILE}.tmp`, JSON.stringify(all), { mode: 0o600 })
+      renameSync(`${QUEUE_FILE}.tmp`, QUEUE_FILE)
     } else rmSync(QUEUE_FILE, { force: true })
   } catch (err) {
     log(`saving queue failed: ${err}`)
@@ -756,7 +759,7 @@ async function tick(): Promise<void> {
       if (info?.sessionId && info.sessionId !== slot.sessionId) {
         slot.sessionId = info.sessionId
         dirty = true
-        if (slot.name === 'main') writeFileSync(join(STATE_DIR, 'last-session'), info.sessionId + '\n')
+        if (slot.name === 'main') writeFileSync(join(STATE_DIR, 'last-session'), `${info.sessionId}\n`)
       }
       r.status = info?.status
       r.version = (info as { version?: string } | undefined)?.version ?? r.version

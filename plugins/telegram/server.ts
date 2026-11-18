@@ -18,13 +18,13 @@ import {
 import { z } from 'zod'
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
-import { randomBytes } from 'crypto'
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync, openSync, readSync, closeSync, fstatSync } from 'fs'
-import { homedir } from 'os'
-import { execFile, execFileSync } from 'child_process'
-import { join, extname, sep } from 'path'
+import { randomBytes } from 'node:crypto'
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync, openSync, readSync, closeSync, fstatSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { execFile, execFileSync } from 'node:child_process'
+import { join, extname, sep } from 'node:path'
 import {
-  chunk, clip, describeTool, expandTimes, fmtDuration, fmtElapsed, fmtTokens, renderChecklist, renderDraft, renderStatus, safeName,
+  chunk, clip, describeTool, expandTimes, fmtDuration, fmtTokens, renderChecklist, renderDraft, renderStatus, safeName,
   type Step,
 } from './lib/format.ts'
 
@@ -245,7 +245,7 @@ const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 // exfil channel for arbitrary paths — but the server's own state is the one
 // thing Claude has no reason to ever send.
 function assertSendable(f: string): void {
-  let real, stateReal: string
+  let real: string, stateReal: string
   try {
     real = realpathSync(f)
     stateReal = realpathSync(STATE_DIR)
@@ -314,8 +314,8 @@ function assertAllowedChat(chat_id: string): void {
 function saveAccess(a: Access): void {
   if (STATIC) return
   mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-  const tmp = ACCESS_FILE + '.tmp'
-  writeFileSync(tmp, JSON.stringify(a, null, 2) + '\n', { mode: 0o600 })
+  const tmp = `${ACCESS_FILE}.tmp`
+  writeFileSync(tmp, `${JSON.stringify(a, null, 2)}\n`, { mode: 0o600 })
   renameSync(tmp, ACCESS_FILE)
 }
 
@@ -346,7 +346,7 @@ function noteUnlistedGroup(id: string, title?: string): void {
   } catch {}
   seen[id] = { title, lastSeen: new Date().toISOString() }
   try {
-    writeFileSync(file, JSON.stringify(seen, null, 2) + '\n', { mode: 0o600 })
+    writeFileSync(file, `${JSON.stringify(seen, null, 2)}\n`, { mode: 0o600 })
   } catch {}
 }
 
@@ -744,10 +744,6 @@ function shortcuts(): Map<string, Shortcut> {
 
 const bare = (emoji: string) => emoji.replace(/\uFE0F/g, '')
 
-function reactionMap(): Record<string, string> {
-  return Object.fromEntries([...shortcuts()].map(([e, v]) => [e, v.meaning]))
-}
-
 /** Tell Claude the user picked a shortcut on one of its messages. */
 function deliverShortcut(chat: string, messageId: number, emoji: string, user: { id: string; username?: string }, via: string): boolean {
   const sent = findSent(chat, messageId)
@@ -761,7 +757,7 @@ function deliverShortcut(chat: string, messageId: number, emoji: string, user: {
     params: {
       content:
         `[${via} ${emoji} on your message ${messageId}] ${sc.meaning}\n` +
-        `Your message began: "${quote.length > 200 ? quote.slice(0, 199) + '…' : quote}"`,
+        `Your message began: "${quote.length > 200 ? `${quote.slice(0, 199)}…` : quote}"`,
       meta: {
         chat_id: chat,
         message_id: String(messageId),
@@ -862,7 +858,7 @@ function saveChecklists(all: Record<string, Checklist>): void {
 async function showProgress(chat: string, title: string | undefined, steps: Step[], fresh: boolean): Promise<string> {
   if (!steps.length) throw new Error('progress needs at least one step')
   const all = loadChecklists()
-  let cur = all[chat]
+  let cur: Checklist | undefined = all[chat]
   if (cur && (fresh || cur.finished)) cur = undefined
   const started = cur?.started ?? Math.floor(Date.now() / 1000)
   const finished = steps.every(x => x.state === 'done' || x.state === 'skipped')
@@ -1462,7 +1458,7 @@ function askKeyboard(rec: AskRecord, qi: number): InlineKeyboard {
   q.options.forEach((label, i) => {
     const mark = q.multiSelect && q.selected.includes(i) ? '✔ ' : ''
     const text = `${mark}${i + 1}. ${label}`
-    kb.text(text.length > 60 ? text.slice(0, 59) + '…' : text, `ask:${rec.id}:${qi}:${i}`).row()
+    kb.text(text.length > 60 ? `${text.slice(0, 59)}…` : text, `ask:${rec.id}:${qi}:${i}`).row()
   })
   if (q.multiSelect) kb.text('✅ Done', `ask:${rec.id}:${qi}:d`)
   return kb
@@ -1792,7 +1788,7 @@ async function handleInbound(
   const replyQuote = (ctx.message as any)?.quote?.text as string | undefined
   const replyRaw = replyQuote ?? replyMsg?.text ?? replyMsg?.caption
   const replyText = replyRaw
-    ? safeName(replyRaw.length > 800 ? replyRaw.slice(0, 800) + '…' : replyRaw)
+    ? safeName(replyRaw.length > 800 ? `${replyRaw.slice(0, 800)}…` : replyRaw)
     : undefined
   const replyFrom = replyMsg?.from
     ? safeName(replyMsg.from.username ?? String(replyMsg.from.id))
@@ -2182,7 +2178,7 @@ bot.on('message_reaction', async ctx => {
 bot.callbackQuery(/^qr:/, async ctx => {
   const m = /^qr:(\d+):(\d+|more)$/.exec(ctx.callbackQuery.data)
   const gated = dmCommandGate(ctx)
-  if (!m || !gated || !gated.access.allowFrom.includes(gated.senderId)) {
+  if (!m || !gated?.access.allowFrom.includes(gated.senderId)) {
     await ctx.answerCallbackQuery({ text: m ? 'Not authorized.' : undefined }).catch(() => {})
     return
   }
@@ -2211,7 +2207,7 @@ bot.callbackQuery('qr:done', ctx => ctx.answerCallbackQuery().catch(() => {}))
 // LOCAL PATCH: ⏹ Stop on the status message interrupts the session.
 bot.callbackQuery('stop:run', async ctx => {
   const gated = dmCommandGate(ctx)
-  if (!gated || !gated.access.allowFrom.includes(gated.senderId)) {
+  if (!gated?.access.allowFrom.includes(gated.senderId)) {
     await ctx.answerCallbackQuery({ text: 'Not authorized.' }).catch(() => {})
     return
   }
@@ -2304,7 +2300,7 @@ function connectRouter(): void {
     unix: ROUTER_SOCKET!,
     socket: {
       open(sock) {
-        sock.write(JSON.stringify({ hello: SLOT, pid: process.pid, plugin: pluginVersion() }) + '\n')
+        sock.write(`${JSON.stringify({ hello: SLOT, pid: process.pid, plugin: pluginVersion() })}\n`)
         process.stderr.write(`telegram channel: connected to router as ${SLOT}\n`)
       },
       data(_sock, chunk) {

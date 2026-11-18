@@ -14,21 +14,21 @@
  * If anything fails before the questions are sent, the hook stays silent and
  * the normal terminal picker is used.
  */
-import { mkdirSync, writeFileSync } from 'fs'
-import { randomBytes } from 'crypto'
-import { join } from 'path'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { join } from 'node:path'
 import { STATE_DIR, botCall, isChannelSession, readHookInput, readToken, targets } from './lib'
 
 type Option = { label?: string; description?: string }
 type Question = { question?: string; header?: string; multiSelect?: boolean; options?: Option[] }
 type HookInput = { hook_event_name?: string; tool_name?: string; tool_input?: { questions?: Question[] } }
 
-const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 async function main(): Promise<void> {
   if (process.env.TELEGRAM_ASK === 'off') return
   const input = await readHookInput<HookInput>()
-  if (!input || input.tool_name !== 'AskUserQuestion') return
+  if (input?.tool_name !== 'AskUserQuestion') return
   const questions = (input.tool_input?.questions ?? []).filter(q => q.question && q.options?.length)
   if (!questions.length) return
   if (!isChannelSession()) return

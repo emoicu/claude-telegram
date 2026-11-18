@@ -20,10 +20,10 @@
  * The first invocation returns immediately and re-runs itself detached, so
  * the plugin never waits on a busy session. Jobs are serialised with a lock.
  */
-import { spawn, execFileSync } from 'child_process'
-import { appendFileSync, readFileSync, openSync, closeSync, rmSync, statSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
-import { join } from 'path'
+import { spawn, execFileSync } from 'node:child_process'
+import { appendFileSync, readFileSync, openSync, closeSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels', 'telegram')
@@ -202,10 +202,14 @@ function slashOutput(screen: string, cmd: string, minEchoes: number): string {
 function describeSlash(cmd: string, out: string): string {
   let m: RegExpExecArray | null
   if (!out) return `⚠️ Typed ${cmd} but could not read the result. Try again in a moment.`
-  if ((m = /Set model to (.+?) and saved as your default/.exec(out))) return `✅ Model switched to ${m[1]} (saved as default)`
-  if ((m = /Kept model as (.+)/.exec(out))) return `ℹ️ Model unchanged: ${m[1]}`
-  if ((m = /Model '(.+)' not found/.exec(out))) return `⚠️ Unknown model: ${m[1]}\nOptions: ${MODELS.join(', ')}`
-  if ((m = /Set effort level to (\w+)/.exec(out))) return `✅ Effort set to ${m[1]} (saved as default)`
+  m = /Set model to (.+?) and saved as your default/.exec(out)
+  if (m) return `✅ Model switched to ${m[1]} (saved as default)`
+  m = /Kept model as (.+)/.exec(out)
+  if (m) return `ℹ️ Model unchanged: ${m[1]}`
+  m = /Model '(.+)' not found/.exec(out)
+  if (m) return `⚠️ Unknown model: ${m[1]}\nOptions: ${MODELS.join(', ')}`
+  m = /Set effort level to (\w+)/.exec(out)
+  if (m) return `✅ Effort set to ${m[1]} (saved as default)`
   if (out.startsWith('Effort level set to auto')) return '✅ Effort set to auto'
   if (out.startsWith('Invalid argument')) return `⚠️ Invalid level. Options: ${EFFORTS.join(', ')}`
   return `ℹ️ ${out}`

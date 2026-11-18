@@ -13,7 +13,7 @@ describe('chunk', () => {
     expect(chunk('abcdefghij', 4, 'length')).toEqual(['abcd', 'efgh', 'ij'])
   })
   test('newline mode prefers paragraph breaks', () => {
-    const text = 'a'.repeat(30) + '\n\n' + 'b'.repeat(30)
+    const text = `${'a'.repeat(30)}\n\n${'b'.repeat(30)}`
     expect(chunk(text, 40, 'newline')).toEqual(['a'.repeat(30), 'b'.repeat(30)])
   })
   test('no part is longer than the limit', () => {

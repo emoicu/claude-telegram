@@ -1,10 +1,10 @@
 /**
  * Shared helpers for the plugin's hook scripts.
  */
-import { execFileSync } from 'child_process'
-import { readFileSync } from 'fs'
-import { homedir } from 'os'
-import { join } from 'path'
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 export const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 export const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels', 'telegram')

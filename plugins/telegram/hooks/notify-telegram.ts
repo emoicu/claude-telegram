@@ -14,8 +14,8 @@
  * server.ts). Prompts that server.ts already relayed with Allow/Deny buttons
  * are skipped. TELEGRAM_NOTIFY=off disables it.
  */
-import { readFileSync } from 'fs'
-import { join } from 'path'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { SLOT, STATE_DIR, botCall, isChannelSession, readHookInput, readToken, targets } from './lib'
 
 const RELAY_GRACE_MS = 10_000 // a relay this recent means the chat already has buttons
@@ -41,7 +41,7 @@ function lastToolCall(path?: string): string | undefined {
   const lines = text.split('\n')
   for (let i = lines.length - 1; i > 0; i--) {
     const line = lines[i]
-    if (!line || !line.includes('"tool_use"')) continue
+    if (!line?.includes('"tool_use"')) continue
     try {
       const e = JSON.parse(line)
       const uses = (e.message?.content ?? []).filter((c: any) => c?.type === 'tool_use')
@@ -50,7 +50,7 @@ function lastToolCall(path?: string): string | undefined {
       const input = u.input ?? {}
       const detail = input.description ?? input.command ?? input.file_path ?? input.url ?? ''
       const one = String(detail).replace(/\s+/g, ' ').trim()
-      return `${u.name}${one ? `: ${one.length > 200 ? one.slice(0, 199) + '…' : one}` : ''}`
+      return `${u.name}${one ? `: ${one.length > 200 ? `${one.slice(0, 199)}…` : one}` : ''}`
     } catch {}
   }
   return undefined

@@ -28,6 +28,8 @@ import {
   type Step,
 } from './lib/format.ts'
 import { createLogger, parseLevel } from './lib/log.ts'
+import { scanTranscriptTail } from './lib/transcript.ts'
+import { bare, mergeShortcuts, PAUSE_REACTION, QUICK_FIRST, type Shortcut } from './lib/shortcuts.ts'
 import {
   type Access, decideInbound, defaultAccess, type GateResult, isAllowedChat, isMentionedIn, isSendablePath, parseAccess,
   pruneExpired,
@@ -591,56 +593,25 @@ const celebrate = new Set<string>() // chats whose checklist just finished
 
 // LOCAL PATCH: reaction shortcuts. A reaction from the user on one of our
 // messages becomes a short instruction to Claude, quoting the start of that
-// message. Defaults below; <state>/reactions.json overrides them
+// message. Defaults in lib/shortcuts.ts; <state>/reactions.json overrides them
 // ({"emoji": "meaning"}, null removes one). Reactions on messages we did not
 // send, or with emoji not in the map, are ignored.
-const DEFAULT_REACTIONS: Record<string, string> = {
-  '👍': 'Agreed, go ahead: continue with what this message proposes.',
-  '👌': 'Pick the option you recommended in this message and carry on.',
-  '👎': 'Not right: drop this approach and try a different one.',
-  '🤔': "I don't follow: explain this message again in simpler words.",
-  '👀': 'Tell me more: expand on this message with details and reasoning.',
-  '✍': "Write it down: turn this message's content into a document or save it to memory.",
-  '❤': 'Remember this: save the preference shown here to memory and follow it from now on.',
-  '🔥': 'Do it now: carry out what this message proposes without asking again.',
-  '🙏': 'Pause: stop the current work and wait for my next instruction.',
-  '🎉': 'Done: wrap up, commit the work and clean up temporary files.',
-}
-const PAUSE_REACTION = '🙏' // also interrupts a running turn
 const SENT_FILE = join(STATE_DIR, `sent-messages${SLOT === 'main' ? '' : `-${SLOT}`}.json`)
 const SENT_KEEP = 300
 
-const DEFAULT_LABELS: Record<string, string> = {
-  '👍': 'Go on', '👌': 'Your pick', '👎': 'Rethink', '🤔': 'Explain', '👀': 'More',
-  '✍': 'Write down', '❤': 'Remember', '🔥': 'Do it', '🙏': 'Pause', '🎉': 'Wrap up',
-}
-// Shown first under the latest reply; the rest sit behind "⋯".
-const QUICK_FIRST = ['👍', '👎', '🤔', '🔥']
 // off (default): no buttons, reactions only; dm: quick buttons under the
 // latest reply in direct messages; all: also in groups.
 const QUICK_BUTTONS = process.env.TELEGRAM_QUICK_BUTTONS ?? 'off'
 
-type Shortcut = { meaning: string; label: string }
-
 function shortcuts(): Map<string, Shortcut> {
-  const map = new Map<string, Shortcut>()
-  for (const [e, meaning] of Object.entries(DEFAULT_REACTIONS)) map.set(e, { meaning, label: DEFAULT_LABELS[e] ?? '' })
+  let custom: unknown
   try {
-    const custom = JSON.parse(readFileSync(join(STATE_DIR, 'reactions.json'), 'utf8')) as
-      Record<string, string | { meaning?: string; label?: string } | null>
-    for (const [e, v] of Object.entries(custom)) {
-      if (v == null) map.delete(e)
-      else if (typeof v === 'string') map.set(e, { meaning: v, label: map.get(e)?.label ?? '' })
-      else map.set(e, { meaning: v.meaning ?? map.get(e)?.meaning ?? '', label: v.label ?? map.get(e)?.label ?? '' })
-    }
+    custom = JSON.parse(readFileSync(join(STATE_DIR, 'reactions.json'), 'utf8'))
   } catch (err) {
     ignored('read reactions.json', err)
   }
-  for (const [e, v] of map) if (!v.meaning) map.delete(e)
-  return map
+  return mergeShortcuts(custom)
 }
-
-const bare = (emoji: string) => emoji.replace(/\uFE0F/g, '')
 
 /** Tell Claude the user picked a shortcut on one of its messages. */
 function deliverShortcut(chat: string, messageId: number, emoji: string, user: { id: string; username?: string }, via: string): boolean {
@@ -1853,36 +1824,12 @@ function scanSteps(w: Work, path: string): void {
   let tail: string
   try {
     tail = readTail(path)
-  } catch {
+  } catch (err) {
+    ignored(`read transcript ${path}`, err)
     return
   }
-  const lines = tail.split('\n')
-  for (let i = 1; i < lines.length; i++) { // line 0 may be cut in half
-    const line = lines[i]
-    if (!line || !(line.includes('"tool_use"') || line.includes('"type":"text"'))) continue
-    let entry: any
-    try {
-      entry = JSON.parse(line)
-    } catch {
-      continue
-    }
-    if (entry?.type !== 'assistant' || typeof entry.timestamp !== 'string') continue
-    if (entry.timestamp < w.sinceIso) continue
-    for (const c of entry.message?.content ?? []) {
-      if (c?.type === 'text' && typeof c.text === 'string' && c.text.trim()) {
-        w.note = c.text
-        continue
-      }
-      if (c?.type !== 'tool_use' || typeof c.id !== 'string' || w.seen.has(c.id)) continue
-      w.seen.add(c.id)
-      w.steps++
-      w.current = describeTool(String(c.name ?? ''), (c.input ?? {}) as Record<string, unknown>)
-    }
-  }
+  scanTranscriptTail(tail, w)
 }
-
-
-
 
 const stopKeyboard = () => new InlineKeyboard().text('⏹ Stop', 'stop:run')
 
@@ -2069,7 +2016,7 @@ if (STATUS_ENABLED) {
   }, STATUS_POLL_MS).unref()
 }
 
-// LOCAL PATCH: reaction shortcuts (see DEFAULT_REACTIONS).
+// LOCAL PATCH: reaction shortcuts (see lib/shortcuts.ts).
 bot.on('message_reaction', async ctx => {
   const r = ctx.messageReaction
   const chat = String(r.chat.id)

@@ -39,6 +39,7 @@ import {API_ROOT, channelMode, ENV_FILE, ignored, INBOX_DIR, log, PID_FILE, ROUT
 } from './core/config.ts'
 import { startInboxPruning } from './core/inbox.ts'
 import { activityFile, readActivity, stopFlagFile } from './lib/activity.ts'
+import { retryDelayMs } from './lib/retry.ts'
 import { handlePermissionButtons, relayPermissionRequests } from './core/permissions.ts'
 import {
   assertAllowedChat, assertSendable, dmCommandGate, gate as gateWith, loadAccess, startApprovalPolling,
@@ -92,6 +93,27 @@ process.on('uncaughtException', err => {
 const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 const bot = new Bot(TOKEN, { client: { apiRoot: API_ROOT } })
+
+// Retry rate limits (429), server errors and, for calls that are safe to
+// repeat, dropped connections, so a burst of edits or a hiccup at Telegram
+// does not lose a reply (lib/retry.ts). getUpdates has its own retry loop.
+bot.api.config.use(async (prev, method, payload, signal) => {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await prev(method, payload, signal)
+      if (res.ok) return res
+      const delay = retryDelayMs(method, attempt, { status: res.error_code, retryAfter: res.parameters?.retry_after })
+      if (delay == null) return res
+      log.warn(`${method}: ${res.error_code} ${res.description}, retrying in ${delay} ms`)
+      await new Promise(r => setTimeout(r, delay))
+    } catch (err) {
+      const delay = retryDelayMs(method, attempt, { network: true })
+      if (delay == null || signal?.aborted) throw err
+      log.debug(`${method} failed, retrying in ${delay} ms`, err)
+      await new Promise(r => setTimeout(r, delay))
+    }
+  }
+})
 
 // LOCAL PATCH: a session bound to a forum topic posts everything it sends to
 // that group into its own topic, so tools, status messages and prompts need

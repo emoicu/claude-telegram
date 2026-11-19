@@ -18,6 +18,7 @@ export class FakeTelegram {
   private nextUpdate = 1
   private nextMessage = 5000
   private pollers: (() => void)[] = []
+  private failures = new Map<string, { error_code: number; description: string; parameters?: Record<string, unknown> }[]>()
   private server: ReturnType<typeof Bun.serve>
 
   constructor() {
@@ -68,6 +69,11 @@ export class FakeTelegram {
     })
   }
 
+  /** Answer the next calls of `method` with these errors, in order. */
+  failNext(method: string, ...errors: { error_code: number; description: string; parameters?: Record<string, unknown> }[]): void {
+    this.failures.set(method, [...(this.failures.get(method) ?? []), ...errors])
+  }
+
   sent(method?: string | RegExp): Call[] {
     return this.calls.filter(c => (method === undefined ? true : typeof method === 'string' ? c.method === method : method.test(c.method)))
   }
@@ -93,6 +99,11 @@ export class FakeTelegram {
     else if (type.includes('form')) {
       const form = await req.formData()
       for (const [k, v] of form.entries()) body[k] = typeof v === 'string' ? v : `<file ${(v as File).name}>`
+    }
+    const failure = this.failures.get(method)?.shift()
+    if (failure) {
+      this.calls.push({ method, body, result: { failed: failure.error_code } })
+      return Response.json({ ok: false, ...failure }, { status: failure.error_code })
     }
     const result = await this.result(method, body)
     if (method !== 'getUpdates') this.calls.push({ method, body, result })

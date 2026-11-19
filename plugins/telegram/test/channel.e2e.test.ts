@@ -187,3 +187,23 @@ describe('progress', () => {
     expect(body).not.toMatch(/\[x\] two/)
   })
 })
+
+describe('retries', () => {
+  test('a rate-limited reply is sent once Telegram allows it', async () => {
+    await boot(allowlist)
+    tg.failNext('sendMessage', { error_code: 429, description: 'Too Many Requests: retry after 1', parameters: { retry_after: 1 } })
+    const started = Date.now()
+    expect(await ch.tool('reply', { chat_id: String(OWNER), text: 'after the wait' })).toMatch(/sent/)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1000)
+    expect(tg.sent('sendMessage').filter(c => c.body.text === 'after the wait')).toHaveLength(2)
+  }, 15_000)
+
+  test('a server error is retried, a bad request is not', async () => {
+    await boot(allowlist)
+    tg.failNext('sendMessage', { error_code: 502, description: 'Bad Gateway' })
+    expect(await ch.tool('reply', { chat_id: String(OWNER), text: 'second try' })).toMatch(/sent/)
+    tg.failNext('sendMessage', { error_code: 400, description: 'Bad Request: chat not found' })
+    await expect(ch.tool('reply', { chat_id: String(OWNER), text: 'no retry' })).rejects.toThrow(/chat not found/)
+    expect(tg.sent('sendMessage').filter(c => c.body.text === 'no retry')).toHaveLength(1)
+  }, 15_000)
+})

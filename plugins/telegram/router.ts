@@ -37,6 +37,7 @@ import { cpus, homedir, loadavg } from 'node:os'
 import { basename, join } from 'node:path'
 import type { Socket } from 'bun'
 import { createLogger, parseLevel } from './lib/log.ts'
+import { retryDelayMs } from './lib/retry.ts'
 import { deliverDue, scheduleDir, scheduledSender } from './lib/schedule.ts'
 import { isNewer } from './lib/version.ts'
 
@@ -133,15 +134,31 @@ async function api(method: string, body: Record<string, unknown> = {}): Promise<
   // A half-dead connection would otherwise hang the poll loop for good:
   // allow a long poll its own timeout plus some slack, anything else 30s.
   const limit = method === 'getUpdates' ? (Number(body.timeout ?? 0) + 20) * 1000 : 30_000
-  const res = await fetch(`${API_ROOT}/bot${TOKEN}/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(limit),
-  })
-  const json: any = await res.json().catch(() => ({ ok: false, description: `HTTP ${res.status}` }))
-  if (!json.ok) throw Object.assign(new Error(`${method}: ${json.description}`), { code: json.error_code })
-  return json.result
+  for (let attempt = 0; ; attempt++) {
+    let json: any
+    try {
+      const res = await fetch(`${API_ROOT}/bot${TOKEN}/${method}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(limit),
+      })
+      json = await res.json().catch(() => ({ ok: false, error_code: res.status, description: `HTTP ${res.status}` }))
+    } catch (err) {
+      // Rate limits, server errors and dropped connections are retried
+      // (see lib/retry.ts); the poll loop handles getUpdates itself.
+      const delay = retryDelayMs(method, attempt, { network: true })
+      if (delay == null) throw err
+      logger.debug(`${method}: ${err}, retrying in ${delay} ms`)
+      await sleep(delay)
+      continue
+    }
+    if (json.ok) return json.result
+    const delay = retryDelayMs(method, attempt, { status: json.error_code, retryAfter: json.parameters?.retry_after })
+    if (delay == null) throw Object.assign(new Error(`${method}: ${json.description}`), { code: json.error_code })
+    logger.warn(`${method}: ${json.error_code} ${json.description}, retrying in ${delay} ms`)
+    await sleep(delay)
+  }
 }
 
 /** Fire-and-forget message to a slot's chat (its topic, or every allowlisted DM for main). */

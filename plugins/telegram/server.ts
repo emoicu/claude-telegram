@@ -22,7 +22,7 @@ import { homedir } from 'node:os'
 import { execFile, execFileSync } from 'node:child_process'
 import { dirname, join, extname } from 'node:path'
 import {
-  chunk, clip, expandTimes, fmtDuration, fmtTokens, mdSpaced, plainMarkdown, renderChecklist, renderDraft, renderStatus, safeName,
+  chunk, clip, expandTimes, fmtDuration, fmtTokens, mdList, mdSpaced, plainMarkdown, renderChecklist, renderDraft, renderStatus, safeName,
   type Step,
 } from './lib/format.ts'
 import { scanTranscriptTail } from './lib/transcript.ts'
@@ -1042,25 +1042,29 @@ function sessionReport(): string {
       uptime: info.startedAt ? fmtDuration(Date.now() - info.startedAt) : '?',
     }),
   )
-  out.push(t('sessionDir', { dir: info.cwd ?? '?', branch: last?.gitBranch && last.gitBranch !== 'HEAD' ? ` (${last.gitBranch})` : '' }))
-  out.push(t('sessionId', { id: String(info.sessionId ?? '?').slice(0, 8) }))
-  out.push('')
-  out.push(t('sessionModel', { model: last?.message?.model ?? '?' }))
-  out.push(t('sessionEffort', { effort: last?.effort ?? '?' }))
-  if (mode) out.push(t('sessionMode', { mode }))
-  out.push('')
+  out.push(
+    mdList(
+      [
+        t('sessionDir', { dir: info.cwd ?? '?', branch: last?.gitBranch && last.gitBranch !== 'HEAD' ? ` (${last.gitBranch})` : '' }),
+        t('sessionId', { id: String(info.sessionId ?? '?').slice(0, 8) }),
+      ],
+      true,
+    ),
+  )
+  const facts: string[] = [t('sessionModel', { model: last?.message?.model ?? '?' }), t('sessionEffort', { effort: last?.effort ?? '?' })]
+  if (mode) facts.push(t('sessionMode', { mode }))
   const u = last?.message?.usage
   if (u) {
     const ctx = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
     const share = CONTEXT_WINDOW ? Math.round((ctx / CONTEXT_WINDOW) * 100) : undefined
     const pct = share != null ? t('sessionContextPct', { pct: share, window: fmtTokens(CONTEXT_WINDOW) }) : ''
-    out.push(t('sessionContext', { tokens: fmtTokens(ctx), pct }) + (share != null ? `\n\`${usageBar(share)}\`` : ''))
+    facts.push(t('sessionContext', { tokens: fmtTokens(ctx), pct }) + (share != null ? `\n\`${usageBar(share)}\`` : ''))
   } else {
-    out.push(t('sessionNoContext'))
+    facts.push(t('sessionNoContext'))
   }
-  if (messages != null) out.push(t('sessionMessages', { n: messages }))
-  if (cost?.totalCostUSD != null) out.push(t('sessionCost', { cost: Number(cost.totalCostUSD).toFixed(2) }))
-  out.push('', t('sessionVersions', { claude: info.version ?? '?', plugin: pluginVersion() }))
+  if (messages != null) facts.push(t('sessionMessages', { n: messages }))
+  if (cost?.totalCostUSD != null) facts.push(t('sessionCost', { cost: Number(cost.totalCostUSD).toFixed(2) }))
+  out.push(mdList(facts), t('sessionVersions', { claude: info.version ?? '?', plugin: pluginVersion() }))
   return mdSpaced(out)
 }
 

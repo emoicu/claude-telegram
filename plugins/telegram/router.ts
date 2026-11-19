@@ -37,7 +37,7 @@ import { cpus, homedir, loadavg } from 'node:os'
 import { basename, join } from 'node:path'
 import type { Socket } from 'bun'
 import { createLogger, parseLevel } from './lib/log.ts'
-import { mdSpaced, plainMarkdown } from './lib/format.ts'
+import { mdList, mdSpaced, plainMarkdown } from './lib/format.ts'
 import { type Key, translator } from './lib/i18n.ts'
 import { retryDelayMs } from './lib/retry.ts'
 import { deliverDue, scheduleDir, scheduledSender } from './lib/schedule.ts'
@@ -793,7 +793,7 @@ async function reportSessions(chatId: string, thread?: number): Promise<void> {
   await pruneDeletedTopics()
   const cap = capacity()
   const rss = treeRss(running().map(s => runtime(s.name).pid!))
-  const lines = [t('routerSessions', { running: running().length, limit: cap.limit }), '']
+  const lines: string[] = []
   const sorted = [...slots.values()].sort((a, b) => b.lastActive - a.lastActive)
   for (const s of sorted) {
     const r = runtime(s.name)
@@ -812,9 +812,12 @@ async function reportSessions(chatId: string, thread?: number): Promise<void> {
     )
   }
   const mem = memInfoMB()
-  lines.push('', t('routerMemory', { free: Math.round(mem.available), total: Math.round(mem.total), idle: IDLE_MS / 60_000 }))
   const where = thread ? { message_thread_id: thread } : {}
-  const markdown = mdSpaced(lines)
+  const markdown = mdSpaced([
+    t('routerSessions', { running: running().length, limit: cap.limit }),
+    mdList(lines),
+    t('routerMemory', { free: Math.round(mem.available), total: Math.round(mem.total), idle: IDLE_MS / 60_000 }),
+  ])
   await api('sendRichMessage', { chat_id: chatId, rich_message: { markdown }, ...where }).catch(() =>
     api('sendMessage', { chat_id: chatId, text: plainMarkdown(markdown), ...where }).catch(() => {}),
   )

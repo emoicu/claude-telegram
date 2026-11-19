@@ -159,6 +159,7 @@ export function plainMarkdown(md: string): string {
     .replace(/^#+ /gm, '')
     .replace(/<\/?(details|summary)>/g, '')
     .replace(/\*\*|`/g, '')
+    .replace(/ +$/gm, '')
 }
 
 /**
@@ -169,6 +170,18 @@ export function plainMarkdown(md: string): string {
 export function mdSpaced(items: string[]): string {
   return items
     .filter(x => x !== '')
-    .map(x => x.replace(/([^\n])\n(?=[^\n])/g, '$1  \n'))
+    .map(x => x.replace(/([^\n ])\n(?!\n|- |\d+\. )/g, '$1  \n'))
     .join('\n\n')
+}
+
+/**
+ * A bulleted list. Spaced by default (a blank line between items, which
+ * Telegram shows as a gap); `tight` keeps short items together. An item's
+ * own lines stay inside it.
+ */
+export function mdList(items: string[], tight = false): string {
+  return items
+    .filter(x => x !== '')
+    .map(x => `- ${x.replace(/\n/g, '  \n  ')}`)
+    .join(tight ? '\n' : '\n\n')
 }

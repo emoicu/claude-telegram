@@ -2,7 +2,7 @@
 // it into a chat message with bars and reset times in the reader's own
 // time zone. Pure functions; helpers/tmux-session-helper.ts does the I/O.
 
-import { mdSpaced } from './format.ts'
+import { mdList, mdSpaced } from './format.ts'
 import { type T, tEn } from './i18n.ts'
 
 export type UsageItem = { title: string; pct?: number; reset?: string }
@@ -80,22 +80,22 @@ function title(raw: string, t: T): string {
 export function formatUsage(panel: { items: UsageItem[]; lines: string[] }, now: number, t: T = tEn): string {
   const out = [`### ${t('helperUsageTitle')}`]
   if (!panel.items.length) return [...out, '', ...panel.lines].join('\n')
-  for (const it of panel.items) {
-    out.push('')
-    if (it.pct == null) {
-      out.push(`**${title(it.title, t)}** · ${t('helperUsageNoPct')}`)
-    } else {
-      out.push(`**${title(it.title, t)}** ${level(it.pct)} ${it.pct}%\n\`${usageBar(it.pct)}\``)
-    }
+  const blocks = panel.items.map(it => {
+    const lines = [
+      it.pct == null ? `**${title(it.title, t)}** · ${t('helperUsageNoPct')}` : `**${title(it.title, t)}** ${level(it.pct)} ${it.pct}%`,
+    ]
+    if (it.pct != null) lines.push(`\`${usageBar(it.pct)}\``)
     if (it.reset) {
       const at = parseReset(it.reset, now)
       const near = at != null && at * 1000 - now < 20 * 3_600_000
-      out.push(
+      lines.push(
         at != null
           ? t('usageResetsAt', { when: `{{time:${at}|${near ? 't' : 'wdt'}}}`, rel: `{{time:${at}|r}}` })
           : t('usageResetsRaw', { when: it.reset }),
       )
     }
-  }
+    return lines.join('\n')
+  })
+  out.push(mdList(blocks))
   return mdSpaced(out)
 }

@@ -2,7 +2,7 @@
 // are pure functions over facts that server.ts collects.
 
 import type { Access } from './access.ts'
-import { mdSpaced } from './format.ts'
+import { mdList, mdSpaced } from './format.ts'
 import { type T, tEn } from './i18n.ts'
 
 export type Check = { level: 'ok' | 'warn' | 'fail'; text: string }
@@ -107,11 +107,11 @@ export function formatReport(header: string[], checks: Check[], t: T = tEn): str
       : t('doctorAllGood')
   const problems = checks.filter(c => c.level !== 'ok')
   const fine = checks.filter(c => c.level === 'ok')
-  const line = (c: Check) => `- ${ICON[c.level]} ${c.text.replace(/\n\s*/g, '\n  ')}`
-  const out = [t('doctorTitle', { verdict }), ...header]
-  if (problems.length) out.push(t('doctorNeedsAttention'), ...problems.map(line))
+  const line = (c: Check) => `${ICON[c.level]} ${c.text.replace(/\n\s*/g, '\n')}`
+  const out = [t('doctorTitle', { verdict }), mdList(header, true)]
+  if (problems.length) out.push(t('doctorNeedsAttention'), mdList(problems.map(line)))
   if (fine.length) {
-    const list = fine.map(line).join('\n\n')
+    const list = mdList(fine.map(line))
     out.push(problems.length ? `<details><summary>${t('doctorOkCount', { n: fine.length })}</summary>\n\n${list}\n\n</details>` : list)
   }
   return mdSpaced(out)

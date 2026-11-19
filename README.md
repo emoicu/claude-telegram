@@ -5,7 +5,7 @@
 **Drive Claude Code from Telegram: chat with your sessions, watch them work, and steer them from your phone.**
 
 [![test](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml)
-[![version](https://img.shields.io/badge/version-0.0.7--emoicu.46-blue)](plugins/telegram/.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-0.0.7--emoicu.47-blue)](plugins/telegram/.claude-plugin/plugin.json)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-channel%20plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
@@ -150,6 +150,7 @@ Everything is optional; set variables in `~/.claude/channels/telegram/.env` or t
 | `TELEGRAM_CONTEXT_WINDOW` | — | Context size in tokens, to show usage as a percentage |
 | `TELEGRAM_INBOX_KEEP_DAYS` | 30 | Delete downloaded files older than this (`0` keeps all) |
 | `TELEGRAM_CHANNEL_MODE` | auto | `always` / `never` override channel-only polling |
+| `TELEGRAM_API_ROOT` | `https://api.telegram.org` | Bot API base URL, for a self-hosted Bot API server (the tests point it at a fake one) |
 | `TELEGRAM_LOG_LEVEL` | info | `debug`, `info`, `warn` or `error`; `debug` also shows errors that are expected and ignored |
 
 Put a `help.md` in the state directory to replace the `/help` text, for example with a translation.
@@ -169,10 +170,10 @@ Without the router, `server.ts` polls Telegram itself for a single session. With
 ```sh
 cd plugins/telegram
 bun install
-bun run check   # strict type check (tsc), lint (Biome) and tests
+bun run check   # strict type check (tsc), lint (Biome), unit and end-to-end tests
 ```
 
-Pure helpers live in `plugins/telegram/lib/` with tests next to them; CI runs the same checks on every push. `scripts/check-upstream.sh` lists upstream changes since the fork base. See [CLAUDE.md](CLAUDE.md) for repository conventions.
+Pure helpers live in `plugins/telegram/lib/` with tests next to them. End-to-end tests in `plugins/telegram/test/` run `server.ts` and the hooks against a fake Bot API server (`test/harness.ts`) and drive them as Claude Code would over MCP: inbound gating and pairing, the reply, progress and schedule tools, permission buttons including Always allow, reaction shortcuts and the hooks. No bot token or network is needed. CI runs the same checks on every push. `scripts/check-upstream.sh` lists upstream changes since the fork base. See [CLAUDE.md](CLAUDE.md) for repository conventions.
 
 ## Changes from upstream
 

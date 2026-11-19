@@ -210,8 +210,10 @@ process.on('uncaughtException', err => {
 // 5 lowercase letters a-z minus 'l'. Case-insensitive for phone autocorrect.
 // Strict: no bare yes/no (conversational), no prefix/suffix chatter.
 const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
+// Bot API base URL: a self-hosted Bot API server, or a fake one in tests.
+const API_ROOT = (process.env.TELEGRAM_API_ROOT || 'https://api.telegram.org').replace(/\/+$/, '')
 
-const bot = new Bot(TOKEN)
+const bot = new Bot(TOKEN, { client: { apiRoot: API_ROOT } })
 
 // LOCAL PATCH: a session bound to a forum topic posts everything it sends to
 // that group into its own topic, so tools, status messages and prompts need
@@ -638,6 +640,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 const RICH_LIMIT = 32768
 
+const STEP_ALIASES: Record<string, Step['state']> = { pending: 'todo', in_progress: 'doing', completed: 'done', cancelled: 'skipped' }
+function stepState(v: unknown): Step['state'] {
+  const s = String(v ?? '')
+  return (['todo', 'doing', 'done', 'failed', 'skipped'] as const).find(x => x === s) ?? STEP_ALIASES[s] ?? 'todo'
+}
+
 // LOCAL PATCH: message effects (private chats only). The reply right after
 // a progress checklist finishes gets 🎉 unless it names another effect.
 const EFFECTS: Record<string, string> = {
@@ -964,7 +972,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const file_id = args.file_id as string
         const file = await bot.api.getFile(file_id)
         if (!file.file_path) throw new Error('Telegram returned no file_path — file may have expired')
-        const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`
+        const url = `${API_ROOT}/file/bot${TOKEN}/${file.file_path}`
         const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
         if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
         const buf = Buffer.from(await res.arrayBuffer())
@@ -1003,9 +1011,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       case 'progress': {
         const chat_id = args.chat_id as string
         assertAllowedChat(chat_id)
-        const steps = ((args.steps as Step[] | undefined) ?? []).slice(0, 50).map(x => ({
+        // Also accept `status` with todo-list names (pending / in_progress /
+        // completed): models reach for them, and a wrong field used to show
+        // every step unchecked.
+        const steps = ((args.steps as (Step & { status?: string })[] | undefined) ?? []).slice(0, 50).map(x => ({
           text: String(x?.text ?? ''),
-          state: (['todo', 'doing', 'done', 'failed', 'skipped'].includes(x?.state) ? x.state : 'todo') as Step['state'],
+          state: stepState(x?.state ?? x?.status),
         }))
         const result = await showProgress(chat_id, args.title as string | undefined, steps, args.new === true)
         return { content: [{ type: 'text', text: result }] }
@@ -1618,7 +1629,7 @@ bot.on('message:photo', async ctx => {
     try {
       const file = await ctx.api.getFile(best.file_id)
       if (!file.file_path) return undefined
-      const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`
+      const url = `${API_ROOT}/file/bot${TOKEN}/${file.file_path}`
       const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
       const buf = Buffer.from(await res.arrayBuffer())
       const ext = file.file_path.split('.').pop() ?? 'jpg'

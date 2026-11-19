@@ -18,7 +18,10 @@ jobs:
         run: bun run typecheck
       - name: Lint
         run: bun run lint
-      - run: bun test lib/
+      - name: Unit tests
+        run: bun test lib/
+      - name: End-to-end tests
+        run: bun test test/
       - name: Syntax check
         run: |
           for f in server.ts router.ts hooks/*.ts helpers/*.ts; do

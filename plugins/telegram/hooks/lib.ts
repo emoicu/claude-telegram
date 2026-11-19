@@ -56,6 +56,8 @@ export function readToken(): string | undefined {
 
 /** Slot of this session when started by router.ts ("main" otherwise). */
 export const SLOT = process.env.TELEGRAM_SLOT || 'main'
+// Bot API base URL: a self-hosted Bot API server, or a fake one in tests.
+const API_ROOT = (process.env.TELEGRAM_API_ROOT || 'https://api.telegram.org').replace(/\/+$/, '')
 
 /**
  * Where hook messages go: the session's forum topic when router.ts bound it
@@ -88,7 +90,7 @@ export async function readHookInput<T>(): Promise<T | undefined> {
 
 export async function botCall(token: string, method: string, body: Record<string, unknown>): Promise<any> {
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    const res = await fetch(`${API_ROOT}/bot${token}/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),

@@ -9,7 +9,8 @@
     "test": "bun test lib/",
     "typecheck": "tsc -p .",
     "lint": "biome lint .",
-    "check": "bun run typecheck && bun run lint && bun test lib/"
+    "check": "bun run typecheck && bun run lint && bun test lib/ test/",
+    "test:e2e": "bun test test/"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

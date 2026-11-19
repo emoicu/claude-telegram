@@ -39,6 +39,7 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
 const SAFE_ARG = /^[A-Za-z0-9._:-]{1,40}$/
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+const API_ROOT = (process.env.TELEGRAM_API_ROOT || 'https://api.telegram.org').replace(/\/+$/, '')
 
 function log(msg: string): void {
   try {
@@ -49,7 +50,7 @@ function log(msg: string): void {
 async function tg(method: string, body: Record<string, unknown>): Promise<void> {
   if (!TOKEN || !CHAT) return
   try {
-    const res = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
+    const res = await fetch(`${API_ROOT}/bot${TOKEN}/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

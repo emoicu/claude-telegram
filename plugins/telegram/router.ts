@@ -126,12 +126,14 @@ function tmux(...args: string[]): string {
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+// Bot API base URL: a self-hosted Bot API server, or a fake one in tests.
+const API_ROOT = (process.env.TELEGRAM_API_ROOT || 'https://api.telegram.org').replace(/\/+$/, '')
 
 async function api(method: string, body: Record<string, unknown> = {}): Promise<any> {
   // A half-dead connection would otherwise hang the poll loop for good:
   // allow a long poll its own timeout plus some slack, anything else 30s.
   const limit = method === 'getUpdates' ? (Number(body.timeout ?? 0) + 20) * 1000 : 30_000
-  const res = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
+  const res = await fetch(`${API_ROOT}/bot${TOKEN}/${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),

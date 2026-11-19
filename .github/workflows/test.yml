@@ -28,6 +28,6 @@ jobs:
         run: bun test test/
       - name: Syntax check
         run: |
-          for f in server.ts router.ts core/*.ts hooks/*.ts helpers/*.ts; do
+          for f in server.ts router.ts core/*.ts hooks/*.ts helpers/*.ts locales/*.ts; do
             bun build "$f" --target=bun --outdir "$RUNNER_TEMP/build" > /dev/null
           done

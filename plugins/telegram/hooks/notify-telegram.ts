@@ -16,7 +16,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { SLOT, STATE_DIR, botCall, isChannelSession, readHookInput, readToken, targets } from './lib'
+import { SLOT, STATE_DIR, botCall, isChannelSession, readHookInput, readToken, t, targets } from './lib'
 
 const RELAY_GRACE_MS = 10_000 // a relay this recent means the chat already has buttons
 
@@ -84,10 +84,10 @@ async function main(): Promise<void> {
   if (!token || !chats.length) return
 
   const tool = lastToolCall(input.transcript_path)
-  const lines = ['⚠️ Claude is waiting for you at the terminal']
+  const lines = [t('notifyWaiting')]
   if (message) lines.push(`“${message}”`)
-  if (tool) lines.push(`Last step: ${tool}`)
-  lines.push('', 'This prompt can only be answered in the terminal. If nobody answers, Claude Code denies it after a timeout.')
+  if (tool) lines.push(t('notifyLastStep', { tool }))
+  lines.push('', t('notifyTerminalOnly'))
   const text = lines.join('\n')
 
   await Promise.all(chats.map(t => botCall(token, 'sendMessage', { ...t, text })))

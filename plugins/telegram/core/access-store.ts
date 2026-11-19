@@ -9,7 +9,7 @@ import type { Bot, Context } from 'grammy'
 import {
   type Access, decideInbound, defaultAccess, type GateResult, isAllowedChat, isSendablePath, parseAccess, pruneExpired,
 } from '../lib/access.ts'
-import { ACCESS_FILE, APPROVED_DIR, ignored, log, STATE_DIR, STATIC, TOPIC_CHAT } from './config.ts'
+import { ACCESS_FILE, APPROVED_DIR, ignored, log, STATE_DIR, STATIC, t, TOPIC_CHAT } from './config.ts'
 
 // reply's files param takes any path. .env is ~60 bytes and ships as a
 // document. Claude can already Read+paste file contents, so this isn't a new
@@ -147,7 +147,7 @@ function checkApprovals(bot: Bot): void {
 
   for (const senderId of files) {
     const file = join(APPROVED_DIR, senderId)
-    void bot.api.sendMessage(senderId, "Paired! Say hi to Claude.").then(
+    void bot.api.sendMessage(senderId, t('pairApproved')).then(
       () => rmSync(file, { force: true }),
       err => {
         log.warn('failed to send approval confirm', err)

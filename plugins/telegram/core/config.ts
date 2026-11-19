@@ -6,6 +6,7 @@ import { chmodSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { translator } from '../lib/i18n.ts'
 import { createLogger, parseLevel } from '../lib/log.ts'
 
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR
@@ -114,3 +115,6 @@ export {
   ACCESS_FILE, API_ROOT, APPROVED_DIR, channelMode, ENV_FILE, ignored, INBOX_DIR, log, PID_FILE, ROUTER_SOCKET, routed, SLOT,
   STATE_DIR, STATIC, TOKEN, TOPIC_CHAT, TOPIC_THREAD,
 }
+
+/** Translator for what the bot shows in the chat (lib/i18n.ts, /language). */
+export const t = translator(STATE_DIR)

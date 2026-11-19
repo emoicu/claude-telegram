@@ -26,6 +26,7 @@ Telegram ──long polling──▶ router.ts ──unix socket──▶ server
 - `core/` stateful parts of the server: configuration (`config.ts`), access state and gates, permission relay, inbox pruning, doctor facts.
 - `server.ts` wires them to grammY and the MCP SDK; `router.ts` is self-contained apart from `lib/`.
 - `helpers/tmux-session-helper.ts` is the built-in command helper for `/new`, `/model`, `/effort`, `/usage`.
+- `locales/` translations of everything the bot shows (`en.ts` is the source); `lib/i18n.ts` picks the language from `TELEGRAM_LANG` or the `language` file.
 - `skills/` the `/telegram:access` and `/telegram:configure` skills.
 
 ## State directory
@@ -44,7 +45,8 @@ Telegram ──long polling──▶ router.ts ──unix socket──▶ server
 | `permissions/` | Pending and remembered permission prompts |
 | `scheduled/` | One file per scheduled message |
 | `progress.json`, `sent-messages*.json` | Checklist and recent message ids per chat |
-| `reactions.json`, `help.md` | Optional overrides |
+| `language` | Language chosen with `/language` |
+| `reactions.json`, `help.md`, `help.<lang>.md` | Optional overrides |
 
 ## Tests
 

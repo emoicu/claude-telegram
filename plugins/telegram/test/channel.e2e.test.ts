@@ -226,3 +226,44 @@ describe('/doctor', () => {
     expect(tg.sent('sendMessage').some(c => /Doctor/.test(c.body.text ?? ''))).toBe(false)
   })
 })
+
+describe('/language', () => {
+  const command = (user: number, text: string) => tg.dm(user, text, { entities: [{ type: 'bot_command', offset: 0, length: text.length }] })
+
+  test('switches what the bot shows to Chinese', async () => {
+    await boot(allowlist)
+    command(OWNER, '/language')
+    const picker = await tg.waitFor(c => c.method === 'sendMessage' && /Choose the language/.test(c.body.text ?? ''), 'language picker')
+    const buttons = picker.body.reply_markup.inline_keyboard.flat().map((b: any) => b.callback_data)
+    expect(buttons).toEqual(['lang:en', 'lang:zh'])
+
+    tg.press(OWNER, 'lang:zh', picker.result.message_id, picker.body.text)
+    await tg.waitFor(c => c.method === 'editMessageText' && /语言：中文/.test(c.body.text ?? ''), 'confirmation in Chinese')
+    expect(readFileSync(join(ch.stateDir, 'language'), 'utf8')).toBe('zh\n')
+    const menu = await tg.waitFor(
+      c => c.method === 'setMyCommands' && JSON.stringify(c.body.commands).includes('检查一切是否正常'),
+      'Chinese command menu',
+    )
+    expect(menu.body.commands.map((c: any) => c.command)).toContain('language')
+
+    command(OWNER, '/status')
+    await tg.waitFor(c => c.method === 'sendMessage' && /已配对/.test(c.body.text ?? ''), 'status in Chinese')
+
+    ch.notify('notifications/claude/channel/permission_request', {
+      request_id: 'fghij',
+      tool_name: 'Bash',
+      description: 'List files',
+      input_preview: '{"command":"ls"}',
+    })
+    const prompt = await tg.waitFor(c => c.method === 'sendMessage' && /权限请求：Bash/.test(c.body.text ?? ''), 'permission prompt in Chinese')
+    expect(prompt.body.reply_markup.inline_keyboard.flat().map((b: any) => b.text)).toContain('✅ 允许')
+  }, 15_000)
+
+  test('strangers cannot switch it', async () => {
+    await boot(allowlist)
+    tg.press(STRANGER, 'lang:zh', 1)
+    const answer = await tg.waitFor(c => c.method === 'answerCallbackQuery', 'refusal')
+    expect(answer.body.text).toBe('Not authorized.')
+    expect(existsSync(join(ch.stateDir, 'language'))).toBe(false)
+  })
+})

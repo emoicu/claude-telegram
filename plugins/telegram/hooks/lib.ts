@@ -5,9 +5,12 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { translator } from '../lib/i18n.ts'
 
 export const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 export const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels', 'telegram')
+/** Translator for what the hooks post to the chat (/language). */
+export const t = translator(STATE_DIR)
 
 /**
  * Hooks run for every session that has the plugin enabled. Act only when our

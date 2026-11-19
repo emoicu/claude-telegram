@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Channel, FakeTelegram, runHook } from './harness'
 
@@ -35,6 +35,13 @@ describe('StopFailure hook', () => {
     expect(alert.body.text).toContain('API Error: Rate limit reached')
     await runHook('failure-telegram.ts', failure, env())
     expect(tg.sent('sendMessage').filter(c => /rate limit/i.test(c.body.text))).toHaveLength(1)
+  })
+
+  test('speaks the language chosen with /language', async () => {
+    writeFileSync(join(ch.stateDir, 'language'), 'zh\n')
+    await runHook('failure-telegram.ts', failure, env())
+    const alert = await tg.waitFor(c => c.method === 'sendMessage' && /用量或速率达到上限/.test(c.body.text), 'Chinese alert')
+    expect(alert.body.text).toContain('发 /usage 看什么时候重置')
   })
 
   test('does nothing outside the channel session', async () => {

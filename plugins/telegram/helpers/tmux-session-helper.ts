@@ -24,10 +24,12 @@ import { spawn, execFileSync } from 'node:child_process'
 import { appendFileSync, readFileSync, openSync, closeSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { translator } from '../lib/i18n.ts'
 
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels', 'telegram')
 const LOG = join(STATE_DIR, 'session-helper.log')
+const t = translator(STATE_DIR)
 const LOCK = join(STATE_DIR, `session-helper-${process.env.TELEGRAM_HELPER_CLAUDE_PID ?? 'x'}.lock`)
 const PID = process.env.TELEGRAM_HELPER_CLAUDE_PID ?? ''
 const CHAT = process.env.TELEGRAM_HELPER_CHAT_ID ?? ''
@@ -120,7 +122,7 @@ async function jobNew(pane: string): Promise<void> {
   await typeCommand(pane, '/clear')
   await sleep(3000)
   log('new: typed /clear')
-  await send('🆕 Started a new conversation. The previous context was cleared.')
+  await send(t('helperNew'))
 }
 
 function parseUsage(screen: string): string | undefined {
@@ -142,10 +144,10 @@ function parseUsage(screen: string): string | undefined {
     else if (items.length && /\d+% used/.test(s)) items[items.length - 1].pct = /(\d+)% used/.exec(s)![1]
     else if (items.length && s.startsWith('Resets')) items[items.length - 1].reset = s.slice('Resets'.length).trim()
   }
-  if (!items.length) return ['📊 Claude usage', ...lines].join('\n')
+  if (!items.length) return [t('helperUsageTitle'), ...lines].join('\n')
   return [
-    '📊 Claude usage',
-    ...items.map(it => `${it.title}: ${it.pct ? `${it.pct}% used` : 'percentage not found'}${it.reset ? ` (resets ${it.reset})` : ''}`),
+    t('helperUsageTitle'),
+    ...items.map(it => `${it.title}: ${it.pct ? t('helperUsageUsed', { pct: it.pct }) : t('helperUsageNoPct')}${it.reset ? t('helperUsageResets', { when: it.reset }) : ''}`),
   ].join('\n')
 }
 
@@ -176,7 +178,7 @@ async function jobUsage(pane: string): Promise<void> {
     text = parseUsage(screen)
   }
   log(`usage: ${text ? 'read panel' : 'panel not found'}`)
-  await send(text ?? '⚠️ Could not read the usage panel. Try again in a moment.')
+  await send(text ?? t('helperUsageFailed'))
 }
 
 /** Text Claude Code printed below the last `❯ <cmd>` echo, if it is new. */
@@ -200,20 +202,20 @@ function slashOutput(screen: string, cmd: string, minEchoes: number): string {
   return parts.filter(Boolean).join(' ')
 }
 
-function describeSlash(cmd: string, out: string): string {
+function describeSlash(cmd: string, out: string): { text: string; switched?: boolean } {
   let m: RegExpExecArray | null
-  if (!out) return `⚠️ Typed ${cmd} but could not read the result. Try again in a moment.`
+  if (!out) return { text: t('helperNoResult', { cmd }) }
   m = /Set model to (.+?) and saved as your default/.exec(out)
-  if (m) return `✅ Model switched to ${m[1]} (saved as default)`
+  if (m) return { text: t('helperModelSwitched', { model: m[1] }), switched: true }
   m = /Kept model as (.+)/.exec(out)
-  if (m) return `ℹ️ Model unchanged: ${m[1]}`
+  if (m) return { text: t('helperModelUnchanged', { model: m[1] }) }
   m = /Model '(.+)' not found/.exec(out)
-  if (m) return `⚠️ Unknown model: ${m[1]}\nOptions: ${MODELS.join(', ')}`
+  if (m) return { text: t('helperModelUnknown', { model: m[1], options: MODELS.join(', ') }) }
   m = /Set effort level to (\w+)/.exec(out)
-  if (m) return `✅ Effort set to ${m[1]} (saved as default)`
-  if (out.startsWith('Effort level set to auto')) return '✅ Effort set to auto'
-  if (out.startsWith('Invalid argument')) return `⚠️ Invalid level. Options: ${EFFORTS.join(', ')}`
-  return `ℹ️ ${out}`
+  if (m) return { text: t('helperEffortSet', { effort: m[1] }) }
+  if (out.startsWith('Effort level set to auto')) return { text: t('helperEffortAuto') }
+  if (out.startsWith('Invalid argument')) return { text: t('helperEffortInvalid', { options: EFFORTS.join(', ') }) }
+  return { text: `ℹ️ ${out}` }
 }
 
 async function jobSlash(pane: string, cmd: string): Promise<void> {
@@ -238,8 +240,9 @@ async function jobSlash(pane: string, cmd: string): Promise<void> {
   // Older echoes may have scrolled away, which breaks the count; retry once.
   if (!out) out = slashOutput(screen, cmd, 1)
   if (!out) tmux('send-keys', '-t', pane, 'Escape') // close any panel left open
-  let msg = describeSlash(cmd, out)
-  if (confirmed && msg.startsWith('✅ Model')) msg += '\nThe new model re-reads the conversation, so the next reply may be slower.'
+  const described = describeSlash(cmd, out)
+  let msg = described.text
+  if (confirmed && described.switched) msg += `\n${t('helperSlowerNext')}`
   log(`slash: ${cmd} -> ${msg.split('\n')[0]}`)
   await send(msg, { remove_keyboard: true })
 }
@@ -266,12 +269,12 @@ async function runJob(command: string, arg: string): Promise<void> {
   for (let i = 0; i < 900 && !acquireLock(); i++) await sleep(1000)
   try {
     if (!(await waitIdle())) {
-      await send(`⚠️ The session stayed busy, so /${command} was not run. Try again later.`)
+      await send(t('helperBusy', { command }))
       return
     }
     const pane = paneTarget()
     if (!pane) {
-      await send(`⚠️ /${command} needs Claude Code running inside tmux.`)
+      await send(t('helperNeedsTmux', { command }))
       return
     }
     if (command === 'new') await jobNew(pane)
@@ -279,7 +282,7 @@ async function runJob(command: string, arg: string): Promise<void> {
     else await jobSlash(pane, `/${command} ${arg}`)
   } catch (err) {
     log(`job ${command} failed: ${err}`)
-    await send(`⚠️ /${command} failed: ${err instanceof Error ? err.message.split('\n')[0] : 'unknown error'}`)
+    await send(t('helperError', { command, error: err instanceof Error ? err.message.split('\n')[0] : t('helperUnknownError') }))
   } finally {
     try {
       rmSync(LOCK)

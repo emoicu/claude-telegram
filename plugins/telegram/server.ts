@@ -30,12 +30,13 @@ import {
   cancelScheduled, deliverDue, describeScheduled, listScheduled, MAX_PER_CHAT, MAX_TEXT, newId, parseWhen, type Repeat,
   saveScheduled, scheduleDir, scheduledSender,
 } from './lib/schedule.ts'
-import { bare, mergeShortcuts, PAUSE_REACTION, QUICK_FIRST, type Shortcut } from './lib/shortcuts.ts'
+import { bare, DEFAULT_LABELS, mergeShortcuts, PAUSE_REACTION, QUICK_FIRST, type Shortcut } from './lib/shortcuts.ts'
+import { type Key, LANGUAGES, languageFile, normalizeLang, translate } from './lib/i18n.ts'
 import {type GateResult, isAllowedChat, isMentionedIn, 
 } from './lib/access.ts'
 
 import {API_ROOT, channelMode, ENV_FILE, ignored, INBOX_DIR, log, PID_FILE, ROUTER_SOCKET, routed, SLOT,
-  STATE_DIR, TOKEN, TOPIC_CHAT, TOPIC_THREAD,
+  STATE_DIR, t, TOKEN, TOPIC_CHAT, TOPIC_THREAD,
 } from './core/config.ts'
 import { startInboxPruning } from './core/inbox.ts'
 import { doctorReport } from './core/doctor.ts'
@@ -390,7 +391,8 @@ function shortcuts(): Map<string, Shortcut> {
   } catch (err) {
     ignored('read reactions.json', err)
   }
-  return mergeShortcuts(custom)
+  const labels = Object.fromEntries(Object.keys(DEFAULT_LABELS).map(e => [e, t(`shortcut.${e}` as Key)]))
+  return mergeShortcuts(custom, labels)
 }
 
 /** Tell Claude the user picked a shortcut on one of its messages. */
@@ -516,7 +518,7 @@ async function showProgress(chat: string, title: string | undefined, steps: Step
   const started = cur?.started ?? Math.floor(Date.now() / 1000)
   const finished = steps.every(x => x.state === 'done' || x.state === 'skipped')
   if (cur) {
-    const body = expandTimes(renderChecklist(title, steps, started, cur.rich), cur.rich ? 'rich' : 'text')
+    const body = expandTimes(renderChecklist(title, steps, started, cur.rich, t), cur.rich ? 'rich' : 'text')
     try {
       if (cur.rich) {
         await (bot.api.raw as any).editMessageText({ chat_id: chat, message_id: cur.id, rich_message: { markdown: body } })
@@ -535,10 +537,10 @@ async function showProgress(chat: string, title: string | undefined, steps: Step
   let id: number
   let rich = true
   try {
-    id = (await sendRich(chat, expandTimes(renderChecklist(title, steps, started, true), 'rich'))).message_id
+    id = (await sendRich(chat, expandTimes(renderChecklist(title, steps, started, true, t), 'rich'))).message_id
   } catch {
     rich = false
-    id = (await bot.api.sendMessage(chat, expandTimes(renderChecklist(title, steps, started, false), 'text'))).message_id
+    id = (await bot.api.sendMessage(chat, expandTimes(renderChecklist(title, steps, started, false, t), 'text'))).message_id
   }
   rememberSent(chat, [id], `Checklist: ${title ?? ''} ${steps.map(x => x.text).join('; ')}`)
   all[chat] = { chat, id, rich, started, finished }
@@ -827,64 +829,45 @@ setInterval(() => {
 
 bot.command('start', async ctx => {
   if (!dmCommandGate(ctx)) return
-  await ctx.reply(
-    `This bot bridges Telegram to a Claude Code session.\n\n` +
-    `To pair:\n` +
-    `1. DM me anything — you'll get a 6-char code\n` +
-    `2. In Claude Code: /telegram:access pair <code>\n\n` +
-    `After that, DMs here reach that session.`
-  )
+  await ctx.reply(t('start'))
 })
 
 // LOCAL PATCH: a full guide, built from what this install has turned on.
-// <state dir>/help.md, if present, is sent instead (e.g. a translation).
+// <state dir>/help.<lang>.md or help.md, if present, is sent instead.
 function helpText(): string {
-  try {
-    const custom = readFileSync(join(STATE_DIR, 'help.md'), 'utf8').trim()
-    if (custom) return custom
-  } catch (err) {
-    ignored('read help.md', err)
+  for (const name of [`help.${t.lang()}.md`, 'help.md']) {
+    try {
+      const custom = readFileSync(join(STATE_DIR, name), 'utf8').trim()
+      if (custom) return custom
+    } catch (err) {
+      ignored(`read ${name}`, err)
+    }
   }
   const reactions = [...shortcuts()].map(([e, v]) => `${e} ${v.label || clip(v.meaning, 24)}`).join(' · ')
   const out = [
-    '## 🤖 Claude Code on Telegram',
-    'Messages here go to a Claude Code session on your server. It can read and change code, run commands and search the web, and answers here.',
+    t('helpTitle'),
+    t('helpIntro'),
     '',
-    '### 💬 Talking to it',
-    '- **Text, photos, files, voice** are passed on; **quote-reply** a message to point at it.',
-    '- While it works you see a live status with what it is doing; **Stop** interrupts the turn.',
-    '- Long tasks show a ✅ checklist that updates in place; a new message pings you when done.',
-    '- Questions arrive as **buttons**; permission prompts have **Allow / Deny**.',
-    '- Times are shown in **your own time zone**.',
+    t('helpTalkTitle'),
+    t('helpTalk1'),
+    t('helpTalk2'),
+    t('helpTalk3'),
+    t('helpTalk4'),
+    t('helpTalk5'),
     '',
-    '### 👍 Reactions as shortcuts',
-    'React to one of its messages:',
-    reactions || '(none configured)',
+    t('helpReactionsTitle'),
+    t('helpReactionsIntro'),
+    reactions || t('helpReactionsNone'),
     '',
-    '### ⌨️ Commands',
-    '- `/session` model, effort, context size and cost of this session',
-    '- `/doctor` health check: access, permissions, logs, hooks, reminders',
-    ...(COMMAND_HELPER
-      ? [
-          '- `/new` start a fresh conversation',
-          '- `/usage` plan usage and limits',
-          '- `/model [name]` switch model (no name: pick from buttons)',
-          '- `/effort [level]` reasoning effort (no level: pick from buttons)',
-        ]
-      : []),
-    ...(routed ? ['- `/sessions` every session, its state and memory'] : []),
-    '- `/status` pairing state · `/help` this guide',
+    t('helpCommandsTitle'),
+    t('helpCmdSession'),
+    t('helpCmdDoctor'),
+    t('helpCmdLanguage'),
+    ...(COMMAND_HELPER ? [t('helpCmdNew'), t('helpCmdUsage'), t('helpCmdModel'), t('helpCmdEffort')] : []),
+    ...(routed ? [t('helpCmdSessions')] : []),
+    t('helpCmdStatus'),
   ]
-  if (routed) {
-    out.push(
-      '',
-      '### 🗂 Topics: one session each',
-      '- In the forum group, **each topic is its own session** with its own memory; direct messages are the main session.',
-      '- A topic named like a project folder works in that folder.',
-      '- Sessions start on the first message and stop when idle; the next message resumes the same conversation.',
-      '- Close a topic to stop its session; `/sessions` lists them all.',
-    )
-  }
+  if (routed) out.push('', t('helpTopicsTitle'), t('helpTopics1'), t('helpTopics2'), t('helpTopics3'), t('helpTopics4'))
   return out.join('\n')
 }
 
@@ -905,20 +888,18 @@ bot.command('status', async ctx => {
 
   if (access.allowFrom.includes(senderId)) {
     const name = ctx.from!.username ? `@${ctx.from!.username}` : senderId
-    await ctx.reply(`Paired as ${name}.`)
+    await ctx.reply(t('statusPaired', { name }))
     return
   }
 
   for (const [code, p] of Object.entries(access.pending)) {
     if (p.senderId === senderId) {
-      await ctx.reply(
-        `Pending pairing — run in Claude Code:\n\n/telegram:access pair ${code}`
-      )
+      await ctx.reply(t('statusPending', { code }))
       return
     }
   }
 
-  await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
+  await ctx.reply(t('notPaired'))
 })
 
 // LOCAL PATCH: host-handled session commands. Claude Code's slash commands
@@ -936,19 +917,19 @@ bot.command('status', async ctx => {
 const COMMAND_HELPER = process.env.TELEGRAM_COMMAND_HELPER || undefined
 const BUILTIN_HELPER = join(import.meta.dir, 'helpers', 'tmux-session-helper.ts')
 const HELPER_COMMANDS = [
-  { command: 'new', description: 'Start a fresh conversation' },
-  { command: 'usage', description: 'Show plan usage' },
-  { command: 'model', description: 'Switch model, e.g. /model sonnet' },
-  { command: 'effort', description: 'Set reasoning effort, e.g. /effort high' },
+  { command: 'new', key: 'cmdNew' },
+  { command: 'usage', key: 'cmdUsage' },
+  { command: 'model', key: 'cmdModel' },
+  { command: 'effort', key: 'cmdEffort' },
 ] as const
 const HELPER_ARG = /^[A-Za-z0-9._:-]{1,40}$/
 
 // Bare /model and /effort answer with inline buttons attached to the message
 // (plus Cancel) rather than a reply keyboard, which would sit in the input
 // area until a choice was made. Picking a button runs the helper with it.
-const PICKERS: Record<string, { prompt: string; options: string[]; perRow: number }> = {
-  model: { prompt: 'Choose a model (default = account default):', options: ['default', 'fable', 'opus', 'sonnet', 'haiku'], perRow: 3 },
-  effort: { prompt: 'Choose reasoning effort (higher is slower and uses more quota):', options: ['low', 'medium', 'high', 'xhigh', 'max', 'auto'], perRow: 3 },
+const PICKERS: Record<string, { prompt: Key; options: string[]; perRow: number }> = {
+  model: { prompt: 'pickModel', options: ['default', 'fable', 'opus', 'sonnet', 'haiku'], perRow: 3 },
+  effort: { prompt: 'pickEffort', options: ['low', 'medium', 'high', 'xhigh', 'max', 'auto'], perRow: 3 },
 }
 
 function pickerKeyboard(command: string): InlineKeyboard {
@@ -959,7 +940,7 @@ function pickerKeyboard(command: string): InlineKeyboard {
     if ((i + 1) % perRow === 0) kb.row()
   })
   if (options.length % perRow !== 0) kb.row()
-  return kb.text('✖ Cancel', 'cmd:cancel')
+  return kb.text(t('cancelButton'), 'cmd:cancel')
 }
 
 function runHelper(command: string, arg: string, chatId: string): void {
@@ -976,7 +957,7 @@ function runHelper(command: string, arg: string, chatId: string): void {
   execFile(file, argv, { timeout: 30_000, env }, err => {
     if (!err) return
     log.warn(`command helper failed for /${command}`, err)
-    void bot.api.sendMessage(chatId, `/${command} failed: ${err.message.split('\n')[0]}`).catch(() => {})
+    void bot.api.sendMessage(chatId, t('helperFailed', { command, error: err.message.split('\n')[0] })).catch(() => {})
   })
 }
 
@@ -999,12 +980,12 @@ function pluginVersion(): string {
 }
 
 function sessionReport(): string {
-  if (channelMode.claudePid == null) return 'Session info is unavailable: no Claude Code process found.'
+  if (channelMode.claudePid == null) return t('sessionNoProcess')
   let info: Record<string, any> = {}
   try {
     info = JSON.parse(readFileSync(join(CLAUDE_DIR, 'sessions', `${channelMode.claudePid}.json`), 'utf8'))
   } catch {
-    return `Session info is unavailable: no session file for pid ${channelMode.claudePid}.`
+    return t('sessionNoFile', { pid: channelMode.claudePid })
   }
   let last: any, cost: any, mode: string | undefined, messages: number | undefined
   const path = info.sessionId ? findTranscript(info.sessionId) : undefined
@@ -1034,37 +1015,95 @@ function sessionReport(): string {
     }
   }
 
-  const out: string[] = ['🧠 Claude session']
-  out.push(`Name: ${info.name ?? '?'} · ${info.status ?? '?'}`)
-  out.push(`Session: ${String(info.sessionId ?? '?').slice(0, 8)}… · up ${info.startedAt ? fmtDuration(Date.now() - info.startedAt) : '?'}`)
-  out.push(`Directory: ${info.cwd ?? '?'}${last?.gitBranch && last.gitBranch !== 'HEAD' ? ` (${last.gitBranch})` : ''}`)
+  const out: string[] = [t('sessionTitle')]
+  out.push(t('sessionName', { name: info.name ?? '?', status: info.status ?? '?' }))
+  out.push(t('sessionId', { id: String(info.sessionId ?? '?').slice(0, 8), uptime: info.startedAt ? fmtDuration(Date.now() - info.startedAt) : '?' }))
+  out.push(t('sessionDir', { dir: info.cwd ?? '?', branch: last?.gitBranch && last.gitBranch !== 'HEAD' ? ` (${last.gitBranch})` : '' }))
   out.push('')
-  out.push(`Model: ${last?.message?.model ?? '?'}`)
-  out.push(`Effort: ${last?.effort ?? '?'}`)
-  if (mode) out.push(`Permission mode: ${mode}`)
+  out.push(t('sessionModel', { model: last?.message?.model ?? '?' }))
+  out.push(t('sessionEffort', { effort: last?.effort ?? '?' }))
+  if (mode) out.push(t('sessionMode', { mode }))
   out.push('')
   const u = last?.message?.usage
   if (u) {
     const ctx = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
-    const pct = CONTEXT_WINDOW ? ` (${Math.round((ctx / CONTEXT_WINDOW) * 100)}% of ${fmtTokens(CONTEXT_WINDOW)})` : ''
-    out.push(`Context: ${fmtTokens(ctx)} tokens${pct}`)
+    const pct = CONTEXT_WINDOW ? t('sessionContextPct', { pct: Math.round((ctx / CONTEXT_WINDOW) * 100), window: fmtTokens(CONTEXT_WINDOW) }) : ''
+    out.push(t('sessionContext', { tokens: fmtTokens(ctx), pct }))
   } else {
-    out.push('Context: no API call yet')
+    out.push(t('sessionNoContext'))
   }
-  if (messages != null) out.push(`Messages: ${messages}`)
-  if (cost?.totalCostUSD != null) out.push(`Cost so far (API-equivalent): $${Number(cost.totalCostUSD).toFixed(2)}`)
+  if (messages != null) out.push(t('sessionMessages', { n: messages }))
+  if (cost?.totalCostUSD != null) out.push(t('sessionCost', { cost: Number(cost.totalCostUSD).toFixed(2) }))
   out.push('')
-  out.push(`Claude Code ${info.version ?? '?'} · plugin ${pluginVersion()}`)
+  out.push(t('sessionVersions', { claude: info.version ?? '?', plugin: pluginVersion() }))
   return out.join('\n')
 }
 
+// The command menu, in the language chosen with /language. A topic session
+// sets its topic's menu, everyone else the menu of direct messages.
+function registerCommands(): void {
+  const topic = !!TOPIC_CHAT
+  const commands = [
+    ...(topic ? [] : [
+      { command: 'start', description: t('cmdStart') },
+      { command: 'help', description: t('cmdHelp') },
+      { command: 'status', description: t('cmdStatus') },
+    ]),
+    { command: 'session', description: t('cmdSession') },
+    { command: 'doctor', description: t('cmdDoctor') },
+    ...(topic ? [] : [{ command: 'language', description: t('cmdLanguage') }]),
+    ...(COMMAND_HELPER ? HELPER_COMMANDS.map(c => ({ command: c.command, description: t(c.key) })) : []),
+  ]
+  const scope = topic ? { type: 'chat' as const, chat_id: TOPIC_CHAT! } : { type: 'all_private_chats' as const }
+  void bot.api.setMyCommands(commands, { scope }).catch(err => log.warn('setMyCommands failed', err))
+}
+
+function languageKeyboard(): InlineKeyboard {
+  const kb = new InlineKeyboard()
+  for (const [code, name] of Object.entries(LANGUAGES)) kb.text(`${code === t.lang() ? '✓ ' : ''}${name}`, `lang:${code}`)
+  return kb
+}
+
 if (channelMode.poll) {
+  // /language: the language of what the bot itself shows (lib/i18n.ts).
+  // Stored in <state>/language so the router, the hooks and the helper
+  // follow it too; TELEGRAM_LANG overrides it.
+  bot.command('language', async ctx => {
+    const gated = dmCommandGate(ctx)
+    if (!gated) return
+    if (!gated.access.allowFrom.includes(gated.senderId)) {
+      await ctx.reply(t('notPaired'))
+      return
+    }
+    await ctx.reply(t('languageChoose'), { reply_markup: languageKeyboard() })
+  })
+  bot.callbackQuery(/^lang:/, async ctx => {
+    const lang = normalizeLang(ctx.callbackQuery.data.slice('lang:'.length))
+    if (!loadAccess().allowFrom.includes(String(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: t('notAuthorized') }).catch(() => {})
+      return
+    }
+    if (!lang) {
+      await ctx.answerCallbackQuery().catch(() => {})
+      return
+    }
+    try {
+      writeFileSync(languageFile(STATE_DIR), `${lang}\n`, { mode: 0o600 })
+    } catch (err) {
+      log.warn('write language file', err)
+    }
+    const text = translate(lang, 'languageSet', { name: LANGUAGES[lang] })
+    await ctx.answerCallbackQuery({ text: LANGUAGES[lang] }).catch(() => {})
+    await ctx.editMessageText(text).catch(() => {})
+    registerCommands()
+  })
+
   // /doctor: health check of the channel (core/doctor.ts).
   bot.command('doctor', async ctx => {
     const gated = dmCommandGate(ctx)
     if (!gated) return
     if (!gated.access.allowFrom.includes(gated.senderId)) {
-      await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
+      await ctx.reply(t('notPaired'))
       return
     }
     let claudeVersion: string | undefined
@@ -1073,13 +1112,13 @@ if (channelMode.poll) {
     } catch (err) {
       ignored('read Claude session info', err)
     }
-    await ctx.reply(doctorReport({ botUsername, pluginVersion: pluginVersion(), claudeVersion }))
+    await ctx.reply(doctorReport({ botUsername, pluginVersion: pluginVersion(), claudeVersion }, t))
   })
   bot.command('session', async ctx => {
     const gated = dmCommandGate(ctx)
     if (!gated) return
     if (!gated.access.allowFrom.includes(gated.senderId)) {
-      await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
+      await ctx.reply(t('notPaired'))
       return
     }
     await ctx.reply(sessionReport())
@@ -1092,18 +1131,18 @@ if (COMMAND_HELPER && channelMode.poll) {
       const gated = dmCommandGate(ctx)
       if (!gated) return
       if (!gated.access.allowFrom.includes(gated.senderId)) {
-        await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
+        await ctx.reply(t('notPaired'))
         return
       }
       const arg = String(ctx.match ?? '').trim()
       if (arg && !HELPER_ARG.test(arg)) {
-        await ctx.reply(`Invalid argument for /${command}: use letters, digits and . _ : - only.`)
+        await ctx.reply(t('helperBadArg', { command }))
         return
       }
       const chatId = String(ctx.chat!.id)
       noteStatusChat(chatId)
       if (!arg && PICKERS[command]) {
-        await ctx.reply(PICKERS[command]!.prompt, { reply_markup: pickerKeyboard(command) })
+        await ctx.reply(t(PICKERS[command]!.prompt), { reply_markup: pickerKeyboard(command) })
         return
       }
       runHelper(command, arg, chatId)
@@ -1121,13 +1160,13 @@ if (COMMAND_HELPER && channelMode.poll) {
     const data = ctx.callbackQuery.data
     const access = loadAccess()
     if (!access.allowFrom.includes(String(ctx.from.id))) {
-      await ctx.answerCallbackQuery({ text: 'Not authorized.' }).catch(() => {})
+      await ctx.answerCallbackQuery({ text: t('notAuthorized') }).catch(() => {})
       return
     }
     const chatId = String(ctx.chat?.id ?? ctx.from.id)
     if (data === 'cmd:cancel') {
-      await ctx.answerCallbackQuery({ text: 'Cancelled' }).catch(() => {})
-      await ctx.editMessageText('✖ Cancelled').catch(() => {})
+      await ctx.answerCallbackQuery({ text: t('cancelledToast') }).catch(() => {})
+      await ctx.editMessageText(t('cancelledMessage')).catch(() => {})
       return
     }
     const m = /^cmd:(model|effort):([A-Za-z0-9._:-]+)$/.exec(data)
@@ -1137,7 +1176,7 @@ if (COMMAND_HELPER && channelMode.poll) {
     }
     const [, command, option] = m
     await ctx.answerCallbackQuery({ text: `/${command} ${option}` }).catch(() => {})
-    await ctx.editMessageText(`⏳ /${command} ${option} — applying when the session is idle…`).catch(() => {})
+    await ctx.editMessageText(t('pickApplying', { command, option })).catch(() => {})
     noteStatusChat(chatId)
     runHelper(command!, option!, chatId)
   })
@@ -1172,7 +1211,7 @@ function askKeyboard(rec: AskRecord, qi: number): InlineKeyboard {
     const text = `${mark}${i + 1}. ${label}`
     kb.text(text.length > 60 ? `${text.slice(0, 59)}…` : text, `ask:${rec.id}:${qi}:${i}`).row()
   })
-  if (q.multiSelect) kb.text('✅ Done', `ask:${rec.id}:${qi}:d`)
+  if (q.multiSelect) kb.text(t('askDone'), `ask:${rec.id}:${qi}:d`)
   return kb
 }
 
@@ -1181,7 +1220,7 @@ bot.callbackQuery(/^ask:/, async ctx => {
   const access = loadAccess()
   const senderId = String(ctx.from.id)
   if (!m || !access.allowFrom.includes(senderId)) {
-    await ctx.answerCallbackQuery({ text: m ? 'Not authorized.' : undefined }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: m ? t('notAuthorized') : undefined }).catch(() => {})
     return
   }
   const file = join(STATE_DIR, 'ask', `${m[1]}.json`)
@@ -1189,13 +1228,13 @@ bot.callbackQuery(/^ask:/, async ctx => {
   try {
     rec = JSON.parse(readFileSync(file, 'utf8'))
   } catch {
-    await ctx.answerCallbackQuery({ text: 'This question has expired.' }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: t('askExpired') }).catch(() => {})
     return
   }
   const qi = Number(m[2])
   const q = rec.questions[qi]
   if (!q || q.done || rec.delivered) {
-    await ctx.answerCallbackQuery({ text: 'Already answered.' }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: t('askAnswered') }).catch(() => {})
     return
   }
   const choice = m[3]!
@@ -1215,7 +1254,7 @@ bot.callbackQuery(/^ask:/, async ctx => {
     q.done = true
   }
 
-  const chosen = q.selected.map(i => q.options[i]).join(', ') || '(none)'
+  const chosen = q.selected.map(i => q.options[i]).join(', ') || t('askNone')
   // Update this question's message in every chat it was posted to.
   for (const [chatId, msgId] of Object.entries(q.messages)) {
     if (q.done) {
@@ -1224,7 +1263,7 @@ bot.callbackQuery(/^ask:/, async ctx => {
       await bot.api.editMessageReplyMarkup(chatId, msgId, { reply_markup: askKeyboard(rec, qi) }).catch(() => {})
     }
   }
-  await ctx.answerCallbackQuery({ text: q.done ? `Selected: ${chosen}` : undefined }).catch(() => {})
+  await ctx.answerCallbackQuery({ text: q.done ? t('askSelected', { choice: chosen }) : undefined }).catch(() => {})
 
   if (rec.questions.every(x => x.done) && !rec.delivered) {
     rec.delivered = true
@@ -1380,10 +1419,7 @@ async function handleInbound(
   if (result.action === 'drop') return
 
   if (result.action === 'pair') {
-    const lead = result.isResend ? 'Still pending' : 'Pairing required'
-    await ctx.reply(
-      `${lead} — run in Claude Code:\n\n/telegram:access pair ${result.code}`,
-    )
+    await ctx.reply(t(result.isResend ? 'pairStillPending' : 'pairRequired', { code: result.code }))
     return
   }
 
@@ -1610,10 +1646,10 @@ function scanSteps(w: Work, path: string): void {
     ignored(`read transcript ${path}`, err)
     return
   }
-  scanTranscriptTail(tail, w)
+  scanTranscriptTail(tail, w, t)
 }
 
-const stopKeyboard = () => new InlineKeyboard().text('⏹ Stop', 'stop:run')
+const stopKeyboard = () => new InlineKeyboard().text(t('stopButton'), 'stop:run')
 
 const isPrivateChat = (chat: string) => !chat.startsWith('-')
 
@@ -1624,14 +1660,14 @@ const isPrivateChat = (chat: string) => !chat.startsWith('-')
 function interruptClaude(): { stopped: boolean; text: string } {
   const session = readClaudeSession()
   const busy = session?.status != null ? session.status === 'busy' : !!readActivity(ACTIVITY_FILE, Date.now())?.busy
-  if (!busy) return { stopped: false, text: 'Claude is not working on anything right now.' }
+  if (!busy) return { stopped: false, text: t('stopIdle') }
   const pane = /(%\d+)$/.exec(String(session?.tmux ?? ''))?.[1]
-  let problem = 'this Claude session is not running inside tmux'
+  let problem = t('stopNoTmux')
   if (pane) {
     try {
       execFileSync('tmux', ['send-keys', '-t', pane, 'Escape'], { stdio: 'ignore' })
       if (work) work.stopped = true
-      return { stopped: true, text: 'Stopping…' }
+      return { stopped: true, text: t('stopStopping') }
     } catch (err) {
       problem = err instanceof Error ? err.message : String(err)
     }
@@ -1643,11 +1679,11 @@ function interruptClaude(): { stopped: boolean; text: string } {
     mkdirSync(dirname(STOP_FLAG), { recursive: true, mode: 0o700 })
     writeFileSync(STOP_FLAG, String(Date.now()), { mode: 0o600 })
     if (work) work.stopped = true
-    return { stopped: true, text: 'Stopping at the next step…' }
+    return { stopped: true, text: t('stopNextStep') }
   } catch (err) {
     ignored('write stop flag', err)
   }
-  return { stopped: false, text: `Cannot stop: ${problem}.` }
+  return { stopped: false, text: t('stopCannot', { problem }) }
 }
 
 // The status message is scaffolding: once the turn ends it is deleted so the
@@ -1759,7 +1795,7 @@ async function statusTick(): Promise<void> {
       await (bot.api.raw as any).sendMessageDraft({
         chat_id: w.chat,
         draft_id: w.draftId,
-        text: renderDraft(w, now),
+        text: renderDraft(w, now, t),
         can_stop: true,
       })
     } catch (err) {
@@ -1780,7 +1816,7 @@ async function statusTick(): Promise<void> {
     await bot.api.deleteMessage(w.chat, old).catch(() => {})
   }
 
-  const text = renderStatus(w, now)
+  const text = renderStatus(w, now, t)
   if (w.msgId == null) {
     if (now < w.lastEdit) return // backing off after a failed send
     try {
@@ -1844,7 +1880,7 @@ bot.callbackQuery(/^qr:/, async ctx => {
   const m = /^qr:(\d+):(\d+|more)$/.exec(ctx.callbackQuery.data)
   const gated = dmCommandGate(ctx)
   if (!m || !gated?.access.allowFrom.includes(gated.senderId)) {
-    await ctx.answerCallbackQuery({ text: m ? 'Not authorized.' : undefined }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: m ? t('notAuthorized') : undefined }).catch(() => {})
     return
   }
   const chat = String(ctx.chat?.id ?? '')
@@ -1857,7 +1893,7 @@ bot.callbackQuery(/^qr:/, async ctx => {
   const emoji = [...shortcuts().keys()][Number(m[2])]
   const label = emoji ? shortcuts().get(emoji)?.label : undefined
   if (!emoji || !deliverShortcut(chat, messageId, emoji, { id: gated.senderId, username: ctx.from?.username }, 'Button')) {
-    await ctx.answerCallbackQuery({ text: 'This message is too old for shortcuts.' }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: t('shortcutTooOld') }).catch(() => {})
     return
   }
   await ctx.answerCallbackQuery({ text: `${emoji} ${label ?? ''}`.trim() }).catch(() => {})
@@ -1873,12 +1909,12 @@ bot.callbackQuery('qr:done', ctx => ctx.answerCallbackQuery().catch(() => {}))
 bot.callbackQuery('stop:run', async ctx => {
   const gated = dmCommandGate(ctx)
   if (!gated?.access.allowFrom.includes(gated.senderId)) {
-    await ctx.answerCallbackQuery({ text: 'Not authorized.' }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: t('notAuthorized') }).catch(() => {})
     return
   }
   const r = interruptClaude()
   await ctx.answerCallbackQuery({ text: r.text }).catch(() => {})
-  if (r.stopped) await ctx.editMessageText('⏹ Stopped by you.').catch(() => {})
+  if (r.stopped) await ctx.editMessageText(t('stopByYou')).catch(() => {})
 })
 
 // LOCAL PATCH: the stop button Telegram shows on a draft (can_stop) arrives
@@ -1918,17 +1954,7 @@ if (channelMode.poll && !routed) void (async () => {
           attempt = 0
           botUsername = info.username
           log.info(`polling as @${info.username}`)
-          void bot.api.setMyCommands(
-            [
-              { command: 'start', description: 'Welcome and setup guide' },
-              { command: 'help', description: 'What this bot can do' },
-              { command: 'status', description: 'Check your pairing status' },
-              { command: 'session', description: 'Show model, effort and context of the session' },
-              { command: 'doctor', description: 'Check that everything works' },
-              ...(COMMAND_HELPER ? HELPER_COMMANDS : []),
-            ],
-            { scope: { type: 'all_private_chats' } },
-          ).catch(() => {})
+          registerCommands()
         },
       })
       return // bot.stop() was called — clean exit from the loop
@@ -2004,23 +2030,6 @@ if (routed) void (async () => {
     }
   }
   botUsername = bot.botInfo.username
-  const commands = [
-    { command: 'session', description: 'Show model, effort and context of the session' },
-    { command: 'doctor', description: 'Check that everything works' },
-    ...(COMMAND_HELPER ? HELPER_COMMANDS : []),
-  ]
-  if (TOPIC_CHAT) {
-    void bot.api.setMyCommands(commands, { scope: { type: 'chat', chat_id: TOPIC_CHAT } }).catch(() => {})
-  } else {
-    void bot.api.setMyCommands(
-      [
-        { command: 'start', description: 'Welcome and setup guide' },
-        { command: 'help', description: 'What this bot can do' },
-        { command: 'status', description: 'Check your pairing status' },
-        ...commands,
-      ],
-      { scope: { type: 'all_private_chats' } },
-    ).catch(() => {})
-  }
+  registerCommands()
   connectRouter()
 })()

@@ -2,6 +2,7 @@
 // are pure functions over facts that server.ts collects.
 
 import type { Access } from './access.ts'
+import { type T, tEn } from './i18n.ts'
 
 export type Check = { level: 'ok' | 'warn' | 'fail'; text: string }
 
@@ -10,33 +11,33 @@ const warn = (text: string): Check => ({ level: 'warn', text })
 const fail = (text: string): Check => ({ level: 'fail', text })
 
 /** Who can reach Claude, and anything that lets more people in than likely meant. */
-export function checkAccess(a: Access, groupTitles: Record<string, string | undefined> = {}): Check[] {
+export function checkAccess(a: Access, groupTitles: Record<string, string | undefined> = {}, t: T = tEn): Check[] {
   const out: Check[] = []
   const users = a.allowFrom.length
-  if (a.dmPolicy === 'disabled') out.push(warn('Direct messages are disabled (dmPolicy "disabled")'))
-  else out.push(ok(`Direct messages: ${a.dmPolicy}, ${users} allowed user${users === 1 ? '' : 's'}`))
-  if (a.dmPolicy === 'pairing') out.push(warn('Pairing is on: anyone who finds the bot can ask for a code. Use allowlist mode once everyone is paired'))
+  if (a.dmPolicy === 'disabled') out.push(warn(t('doctorDmDisabled')))
+  else out.push(ok(t('doctorDm', { policy: a.dmPolicy, n: users })))
+  if (a.dmPolicy === 'pairing') out.push(warn(t('doctorPairing')))
   const pending = Object.keys(a.pending).length
-  if (pending) out.push(warn(`${pending} pairing code${pending === 1 ? '' : 's'} waiting for approval`))
+  if (pending) out.push(warn(t('doctorPending', { n: pending })))
   for (const [id, g] of Object.entries(a.groups)) {
     const name = groupTitles[id] ? `"${groupTitles[id]}"` : id
-    const who = g.allowFrom?.length ? `${g.allowFrom.length} allowed member${g.allowFrom.length === 1 ? '' : 's'}` : 'every member'
     if (!g.allowFrom?.length && g.requireMention === false) {
-      out.push(warn(`Group ${name}: every member can talk to Claude, without even mentioning the bot`))
+      out.push(warn(t('doctorGroupOpen', { name })))
     } else if (!g.allowFrom?.length) {
-      out.push(warn(`Group ${name}: every member can talk to Claude by mentioning the bot`))
+      out.push(warn(t('doctorGroupMention', { name })))
     } else {
-      out.push(ok(`Group ${name}: ${who}${g.requireMention === false ? '' : ', mention required'}`))
+      const mention = g.requireMention === false ? '' : t('doctorGroupMentionRequired')
+      out.push(ok(t('doctorGroupOk', { name, n: g.allowFrom.length, mention })))
     }
   }
   return out
 }
 
 /** Secrets and the access list should be readable by their owner only. */
-export function checkFileMode(name: string, mode: number | undefined): Check {
-  if (mode == null) return warn(`${name} not found`)
+export function checkFileMode(name: string, mode: number | undefined, t: T = tEn): Check {
+  if (mode == null) return warn(t('doctorFileMissing', { name }))
   const perm = mode & 0o777
-  return perm & 0o077 ? fail(`${name} is readable by others (mode ${perm.toString(8)}); run chmod 600`) : ok(`${name} is private`)
+  return perm & 0o077 ? fail(t('doctorFileOpen', { name, mode: perm.toString(8) })) : ok(t('doctorFilePrivate', { name }))
 }
 
 export type LogSummary = { warnings: number; errors: number; lastProblem?: string }
@@ -56,52 +57,52 @@ export function summarizeLog(text: string, sinceMs: number): LogSummary {
   return s
 }
 
-export function checkLog(name: string, s: LogSummary | undefined): Check {
-  if (!s) return ok(`${name}: no log yet`)
-  if (!s.warnings && !s.errors) return ok(`${name}: no warnings or errors in the last 24 h`)
-  const counts = `${s.errors} error${s.errors === 1 ? '' : 's'}, ${s.warnings} warning${s.warnings === 1 ? '' : 's'} in the last 24 h`
-  const last = s.lastProblem ? `\n    last: ${s.lastProblem.length > 160 ? `${s.lastProblem.slice(0, 159)}…` : s.lastProblem}` : ''
-  return (s.errors ? fail : warn)(`${name}: ${counts}${last}`)
+export function checkLog(name: string, s: LogSummary | undefined, t: T = tEn): Check {
+  if (!s) return ok(t('doctorLogNone', { name }))
+  if (!s.warnings && !s.errors) return ok(t('doctorLogQuiet', { name }))
+  const counts = t('doctorLogCounts', { name, errors: s.errors, warnings: s.warnings })
+  const line = s.lastProblem && (s.lastProblem.length > 160 ? `${s.lastProblem.slice(0, 159)}…` : s.lastProblem)
+  return (s.errors ? fail : warn)(line ? `${counts}\n    ${t('doctorLogLast', { line })}` : counts)
 }
 
 /** The activity hook reports every turn; silence after a turn means it is not loaded. */
-export function checkActivityHook(lastEventMs: number | undefined, now: number): Check {
-  if (lastEventMs == null) return warn('Activity hook has not reported yet (it loads when the session restarts)')
-  return ok(`Activity hook reported ${ago(now - lastEventMs)} ago`)
+export function checkActivityHook(lastEventMs: number | undefined, now: number, t: T = tEn): Check {
+  if (lastEventMs == null) return warn(t('doctorHookNone'))
+  return ok(t('doctorHookOk', { ago: ago(now - lastEventMs, t) }))
 }
 
 /** Overdue scheduled messages mean delivery is stuck. */
-export function checkScheduled(dueTimes: number[], now: number): Check {
-  if (!dueTimes.length) return ok('No scheduled messages')
-  const late = dueTimes.filter(t => now - t > 2 * 60_000).length
-  if (late) return fail(`${late} scheduled message${late === 1 ? ' is' : 's are'} overdue: is the router (or the polling server) running?`)
-  return ok(`${dueTimes.length} scheduled message${dueTimes.length === 1 ? '' : 's'}, next in ${ago(Math.min(...dueTimes) - now)}`)
+export function checkScheduled(dueTimes: number[], now: number, t: T = tEn): Check {
+  if (!dueTimes.length) return ok(t('doctorScheduledNone'))
+  const late = dueTimes.filter(at => now - at > 2 * 60_000).length
+  if (late) return fail(t('doctorScheduledLate', { n: late }))
+  return ok(t('doctorScheduledOk', { n: dueTimes.length, in: ago(Math.min(...dueTimes) - now, t) }))
 }
 
-export function checkDisk(freeBytes: number | undefined): Check {
-  if (freeBytes == null) return ok('Disk space: unknown')
+export function checkDisk(freeBytes: number | undefined, t: T = tEn): Check {
+  if (freeBytes == null) return ok(t('doctorDiskUnknown'))
   const gb = freeBytes / 1024 ** 3
-  return gb < 1 ? warn(`Only ${gb.toFixed(1)} GB free on the state disk`) : ok(`${gb.toFixed(0)} GB free on the state disk`)
+  return gb < 1 ? warn(t('doctorDiskLow', { gb: gb.toFixed(1) })) : ok(t('doctorDiskOk', { gb: gb.toFixed(0) }))
 }
 
-export function ago(ms: number): string {
+export function ago(ms: number, t: T = tEn): string {
   const s = Math.max(0, Math.round(ms / 1000))
-  if (s < 90) return `${s} s`
-  if (s < 5400) return `${Math.round(s / 60)} min`
-  if (s < 172_800) return `${Math.round(s / 3600)} h`
-  return `${Math.round(s / 86_400)} d`
+  if (s < 90) return t('timeS', { n: s })
+  if (s < 5400) return t('timeMin', { n: Math.round(s / 60) })
+  if (s < 172_800) return t('timeH', { n: Math.round(s / 3600) })
+  return t('timeD', { n: Math.round(s / 86_400) })
 }
 
 const ICON = { ok: '✅', warn: '⚠️', fail: '❌' } as const
 
 /** The chat message: a one-line verdict, then every check. */
-export function formatReport(header: string[], checks: Check[]): string {
+export function formatReport(header: string[], checks: Check[], t: T = tEn): string {
   const fails = checks.filter(c => c.level === 'fail').length
   const warns = checks.filter(c => c.level === 'warn').length
   const verdict = fails
-    ? `❌ ${fails} problem${fails === 1 ? '' : 's'}${warns ? `, ${warns} warning${warns === 1 ? '' : 's'}` : ''}`
+    ? t(warns ? 'doctorFailsWarns' : 'doctorFails', { fails, warns })
     : warns
-      ? `⚠️ ${warns} warning${warns === 1 ? '' : 's'}`
-      : '✅ All good'
-  return [`🩺 Doctor: ${verdict}`, '', ...header, '', ...checks.map(c => `${ICON[c.level]} ${c.text}`)].join('\n')
+      ? t('doctorWarns', { warns })
+      : t('doctorAllGood')
+  return [t('doctorTitle', { verdict }), '', ...header, '', ...checks.map(c => `${ICON[c.level]} ${c.text}`)].join('\n')
 }

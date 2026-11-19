@@ -2,6 +2,7 @@
 // work status: which tools ran, what Claude last wrote.
 
 import { describeTool } from './format.ts'
+import { type T, tEn } from './i18n.ts'
 
 /** The part of the live status that transcript scanning updates. */
 export type StepState = {
@@ -20,7 +21,7 @@ export type StepState = {
  * Update `state` from the tail of a transcript. The first line is skipped
  * because a tail read may cut it in half; malformed lines are ignored.
  */
-export function scanTranscriptTail(tail: string, state: StepState): void {
+export function scanTranscriptTail(tail: string, state: StepState, t: T = tEn): void {
   const lines = tail.split('\n')
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i]
@@ -42,7 +43,7 @@ export function scanTranscriptTail(tail: string, state: StepState): void {
       if (c?.type !== 'tool_use' || typeof c.id !== 'string' || state.seen.has(c.id)) continue
       state.seen.add(c.id)
       state.steps++
-      state.current = describeTool(String(c.name ?? ''), (c.input ?? {}) as Record<string, unknown>)
+      state.current = describeTool(String(c.name ?? ''), (c.input ?? {}) as Record<string, unknown>, t)
     }
   }
 }

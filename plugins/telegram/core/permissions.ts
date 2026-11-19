@@ -10,7 +10,7 @@ import { z } from 'zod'
 import type { Access } from '../lib/access.ts'
 import { clip } from '../lib/format.ts'
 import { addRemembered, findPending, loadList, type PendingPrompt, pendingFile, promptLabel, type Remembered, rememberedFile, saveList } from '../lib/remember.ts'
-import { ignored, log, SLOT, STATE_DIR, TOPIC_CHAT } from './config.ts'
+import { ignored, log, SLOT, STATE_DIR, t, TOPIC_CHAT } from './config.ts'
 
 // Stores full permission details for "See more" expansion keyed by request_id.
 const pendingPermissions = new Map<string, { tool_name: string; description: string; input_preview: string }>()
@@ -40,13 +40,13 @@ export function relayPermissionRequests(mcp: Server, bot: Bot, loadAccess: () =>
         ignored('write last-permission-relay', err)
       }
       const access = loadAccess()
-      const text = `🔐 Permission: ${tool_name}`
+      const text = t('permTitle', { tool: tool_name })
       const keyboard = new InlineKeyboard()
-        .text('See more', `perm:more:${request_id}`)
-        .text('✅ Allow', `perm:allow:${request_id}`)
-        .text('❌ Deny', `perm:deny:${request_id}`)
+        .text(t('permMore'), `perm:more:${request_id}`)
+        .text(t('permAllow'), `perm:allow:${request_id}`)
+        .text(t('permDeny'), `perm:deny:${request_id}`)
         .row()
-        .text('🔁 Always allow', `perm:always:${request_id}`)
+        .text(t('permAlways'), `perm:always:${request_id}`)
       // LOCAL PATCH: a topic session asks in its own topic.
       for (const chat_id of TOPIC_CHAT ? [TOPIC_CHAT] : access.allowFrom) {
         void bot.api.sendMessage(chat_id, text, { reply_markup: keyboard }).catch(e => {
@@ -90,7 +90,7 @@ export function handlePermissionButtons(mcp: Server, bot: Bot, loadAccess: () =>
     const access = loadAccess()
     const senderId = String(ctx.from.id)
     if (!access.allowFrom.includes(senderId)) {
-      await ctx.answerCallbackQuery({ text: 'Not authorized.' }).catch(() => {})
+      await ctx.answerCallbackQuery({ text: t('notAuthorized') }).catch(() => {})
       return
     }
     const [, choice, request_id] = m
@@ -99,7 +99,7 @@ export function handlePermissionButtons(mcp: Server, bot: Bot, loadAccess: () =>
     if (behavior === 'more') {
       const details = pendingPermissions.get(request_id)
       if (!details) {
-        await ctx.answerCallbackQuery({ text: 'Details no longer available.' }).catch(() => {})
+        await ctx.answerCallbackQuery({ text: t('permGone') }).catch(() => {})
         return
       }
       const { tool_name, description, input_preview } = details
@@ -110,7 +110,7 @@ export function handlePermissionButtons(mcp: Server, bot: Bot, loadAccess: () =>
         prettyInput = input_preview
       }
       const expanded =
-        `🔐 Permission: ${tool_name}\n\n` +
+        `${t('permTitle', { tool: tool_name })}\n\n` +
         `tool_name: ${tool_name}\n` +
         `description: ${description}\n` +
         `input_preview:\n${prettyInput}`
@@ -134,10 +134,10 @@ export function handlePermissionButtons(mcp: Server, bot: Bot, loadAccess: () =>
     })
     pendingPermissions.delete(request_id)
     const label =
-      behavior === 'deny' ? '❌ Denied' :
-      choice !== 'always' ? '✅ Allowed' :
-      remembered ? `✅ Allowed · won't ask again in this conversation for: ${remembered}` :
-      '✅ Allowed (once: nothing to remember for this prompt)'
+      behavior === 'deny' ? t('permDenied') :
+      choice !== 'always' ? t('permAllowed') :
+      remembered ? t('permRemembered', { what: remembered }) :
+      t('permOnce')
     await ctx.answerCallbackQuery({ text: clip(label, 190) }).catch(() => {})
     // Replace buttons with the outcome so the same request can't be answered
     // twice and the chat history shows what was chosen.

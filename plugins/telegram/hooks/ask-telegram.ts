@@ -17,7 +17,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
-import { STATE_DIR, botCall, isChannelSession, readHookInput, readToken, targets } from './lib'
+import { STATE_DIR, botCall, isChannelSession, readHookInput, readToken, t, targets } from './lib'
 
 type Option = { label?: string; description?: string }
 type Question = { question?: string; header?: string; multiSelect?: boolean; options?: Option[] }
@@ -60,11 +60,11 @@ async function main(): Promise<void> {
     q.options.forEach((label, i) => {
       lines.push(`${i + 1}. ${label}${q.descriptions[i] ? ` — ${q.descriptions[i]}` : ''}`)
     })
-    lines.push('', q.multiSelect ? 'Tap one or more options, then Done. Or type your answer.' : 'Tap an option, or type your answer.')
-    if (record.questions.length > 1) lines.push(`(question ${qi + 1} of ${record.questions.length})`)
+    lines.push('', t(q.multiSelect ? 'askHintMulti' : 'askHintSingle'))
+    if (record.questions.length > 1) lines.push(t('askCounter', { i: qi + 1, n: record.questions.length }))
     q.text = lines.join('\n')
     const rows = q.options.map((label, i) => [{ text: clip(`${i + 1}. ${label}`, 60), callback_data: `ask:${id}:${qi}:${i}` }])
-    if (q.multiSelect) rows.push([{ text: '✅ Done', callback_data: `ask:${id}:${qi}:d` }])
+    if (q.multiSelect) rows.push([{ text: t('askDone'), callback_data: `ask:${id}:${qi}:d` }])
     for (const t of chats) {
       const res = await botCall(token, 'sendMessage', { ...t, text: q.text, reply_markup: { inline_keyboard: rows } })
       if (res?.ok) {

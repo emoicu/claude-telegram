@@ -2,6 +2,13 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.1.0] - 2026-11-19
+
+### Added
+
+- **Chinese interface** and the groundwork for more languages: everything the bot itself shows (menus, `/help`, status line, checklists, buttons, permission prompts, failure alerts, `/doctor`, router and command-helper notices) is translated. `/language` switches it with buttons, for the server, the router, the hooks and the helper at once, and the command menu follows; `TELEGRAM_LANG` overrides it. Translations are in `plugins/telegram/locales/`.
+- `help.<lang>.md` in the state directory replaces `/help` for one language.
+
 ## [1.0.0] - 2026-11-19
 
 The first stable release. From here on, a breaking change to configuration, state files or tools means a new major version.
@@ -44,4 +51,5 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.1.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.1.0
 [1.0.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.0.0

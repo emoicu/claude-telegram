@@ -16,7 +16,7 @@
 import { rmSync, statSync } from 'node:fs'
 import { activityFile, readActivity, recordEvent, stopFlagFile, stopRequested } from '../lib/activity'
 import { describeTool } from '../lib/format'
-import { SLOT, STATE_DIR, isChannelSession, readHookInput } from './lib'
+import { SLOT, STATE_DIR, isChannelSession, readHookInput, t } from './lib'
 
 type HookInput = {
   hook_event_name?: string
@@ -63,7 +63,7 @@ async function main(): Promise<void> {
           )
           return
         }
-        const label = input.tool_name ? describeTool(input.tool_name, input.tool_input ?? {}) : undefined
+        const label = input.tool_name ? describeTool(input.tool_name, input.tool_input ?? {}, t) : undefined
         recordEvent(file, { t: now, e: 'tool', ...(label ? { label } : {}) })
         return
       }

@@ -14,7 +14,7 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { type FailureInput, failureMessage, takeAlertSlot } from '../lib/failure'
-import { SLOT, STATE_DIR, botCall, isChannelSession, readHookInput, readToken, targets } from './lib'
+import { SLOT, STATE_DIR, botCall, isChannelSession, readHookInput, readToken, t, targets } from './lib'
 
 const SENT_FILE = join(STATE_DIR, 'failure-alerts.json')
 
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   const token = readToken()
   const chats = targets()
   if (!token || !chats.length) return
-  const text = failureMessage(input)
+  const text = failureMessage(input, t)
   await Promise.all(chats.map(t => botCall(token, 'sendMessage', { ...t, text })))
 }
 

@@ -4,6 +4,8 @@
  * on their own (see format.test.ts).
  */
 
+import { type T, tEn } from './i18n.ts'
+
 /** What renderStatus/renderDraft need from a running turn. */
 export type StatusInfo = { start: number; steps: number; current?: string; note?: string }
 
@@ -61,13 +63,13 @@ export function expandTimes(text: string, mode: 'text' | 'markdownv2' | 'rich'):
 
 export type Step = { text: string; state: 'todo' | 'doing' | 'done' | 'failed' | 'skipped' }
 
-export function renderChecklist(title: string | undefined, steps: Step[], started: number, rich: boolean): string {
+export function renderChecklist(title: string | undefined, steps: Step[], started: number, rich: boolean, t: T = tEn): string {
   const done = steps.filter(x => x.state === 'done' || x.state === 'skipped').length
   const failed = steps.some(x => x.state === 'failed')
   const finished = done === steps.length
   const now = Math.floor(Date.now() / 1000)
   const at = (unix: number, f: string) => (rich ? `{{time:${unix}|${f}}}` : `{{time:${unix}}}`)
-  const head = rich ? `### 📋 ${title ?? 'Progress'}` : `📋 ${title ?? 'Progress'}`
+  const head = rich ? `### 📋 ${title ?? t('checklistTitle')}` : `📋 ${title ?? t('checklistTitle')}`
   const lines = steps.map(x => {
     const t = x.text.replace(/\s+/g, ' ').trim()
     if (rich) {
@@ -83,8 +85,8 @@ export function renderChecklist(title: string | undefined, steps: Step[], starte
     return `${mark} ${t}`
   })
   const foot = finished
-    ? `✅ ${done}/${steps.length} done · ${at(started, 't')}–${at(now, 't')}`
-    : `${failed ? '⚠️' : '⏳'} ${done}/${steps.length} · started ${at(started, 't')} · updated ${at(now, 'r')}`
+    ? t('checklistDone', { done, total: steps.length, from: at(started, 't'), to: at(now, 't') })
+    : t('checklistRunning', { icon: failed ? '⚠️' : '⏳', done, total: steps.length, from: at(started, 't'), ago: at(now, 'r') })
   return [head, '', ...lines, '', foot].join('\n')
 }
 
@@ -108,24 +110,24 @@ export function clip(s: string, n: number): string {
   return one.length > n ? `${one.slice(0, n - 1)}…` : one
 }
 
-export function describeTool(name: string, input: Record<string, unknown>): string {
+export function describeTool(name: string, input: Record<string, unknown>, t: T = tEn): string {
   const str = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '')
   const base = (p: string) => p.split('/').pop() || p
   if (typeof input.description === 'string' && input.description) return clip(input.description, 80)
   switch (name) {
-    case 'Bash': return `Running: ${clip(str('command'), 60)}`
-    case 'Read': return `Reading ${base(str('file_path'))}`
-    case 'Edit': return `Editing ${base(str('file_path'))}`
-    case 'Write': return `Writing ${base(str('file_path'))}`
-    case 'Grep': return `Searching: ${clip(str('pattern'), 50)}`
-    case 'Glob': return `Finding files: ${clip(str('pattern'), 50)}`
-    case 'WebSearch': return `Web search: ${clip(str('query'), 50)}`
-    case 'WebFetch': return `Fetching: ${clip(str('url'), 60)}`
-    case 'ToolSearch': return 'Loading tools'
+    case 'Bash': return t('toolBash', { x: clip(str('command'), 60) })
+    case 'Read': return t('toolRead', { x: base(str('file_path')) })
+    case 'Edit': return t('toolEdit', { x: base(str('file_path')) })
+    case 'Write': return t('toolWrite', { x: base(str('file_path')) })
+    case 'Grep': return t('toolGrep', { x: clip(str('pattern'), 50) })
+    case 'Glob': return t('toolGlob', { x: clip(str('pattern'), 50) })
+    case 'WebSearch': return t('toolWebSearch', { x: clip(str('query'), 50) })
+    case 'WebFetch': return t('toolWebFetch', { x: clip(str('url'), 60) })
+    case 'ToolSearch': return t('toolToolSearch')
   }
   if (name.startsWith('mcp__plugin_telegram_telegram__')) {
-    const t = name.slice('mcp__plugin_telegram_telegram__'.length)
-    return t === 'reply' ? 'Sending Telegram message' : `Telegram: ${t}`
+    const tool = name.slice('mcp__plugin_telegram_telegram__'.length)
+    return tool === 'reply' ? t('toolReply') : t('toolTelegram', { x: tool })
   }
   return name.replace(/^mcp__/, '').replace(/__/g, ' · ')
 }
@@ -136,16 +138,16 @@ export function fmtElapsed(ms: number): string {
 }
 
 // One line: elapsed time, step count, current step.
-export function renderStatus(w: StatusInfo, now: number): string {
+export function renderStatus(w: StatusInfo, now: number, t: T = tEn): string {
   const parts = [`⏳ ${fmtElapsed(now - w.start)}`]
-  if (w.steps) parts.push(`${w.steps} ${w.steps === 1 ? 'step' : 'steps'}`)
-  parts.push(clip(w.current ?? 'Thinking…', 60))
+  if (w.steps) parts.push(t('statusSteps', { n: w.steps }))
+  parts.push(clip(w.current ?? t('statusThinking'), 60))
   return parts.join(' · ')
 }
 
 /** Draft body: the status plus what Claude last wrote between steps. */
-export function renderDraft(w: StatusInfo, now: number): string {
-  const lines = [renderStatus(w, now)]
+export function renderDraft(w: StatusInfo, now: number, t: T = tEn): string {
+  const lines = [renderStatus(w, now, t)]
   if (w.note) lines.push(`💭 ${clip(w.note, 80)}`)
   return lines.join('\n')
 }

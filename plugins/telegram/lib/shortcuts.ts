@@ -32,9 +32,9 @@ export const QUICK_FIRST = ['👍', '👎', '🤔', '🔥']
 export const bare = (emoji: string) => emoji.replace(/\uFE0F/g, '')
 
 /** Defaults merged with the parsed reactions.json (anything else is ignored). */
-export function mergeShortcuts(custom?: unknown): Map<string, Shortcut> {
+export function mergeShortcuts(custom?: unknown, labels: Record<string, string> = DEFAULT_LABELS): Map<string, Shortcut> {
   const map = new Map<string, Shortcut>()
-  for (const [e, meaning] of Object.entries(DEFAULT_REACTIONS)) map.set(e, { meaning, label: DEFAULT_LABELS[e] ?? '' })
+  for (const [e, meaning] of Object.entries(DEFAULT_REACTIONS)) map.set(e, { meaning, label: labels[e] ?? DEFAULT_LABELS[e] ?? '' })
   if (custom && typeof custom === 'object' && !Array.isArray(custom)) {
     for (const [e, v] of Object.entries(custom as Record<string, unknown>)) {
       if (v == null) map.delete(e)

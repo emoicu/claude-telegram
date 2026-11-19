@@ -14,6 +14,7 @@ import {
   summarizeLog,
 } from '../lib/doctor.ts'
 import { listScheduled, scheduleDir } from '../lib/schedule.ts'
+import type { T } from '../lib/i18n.ts'
 import { loadAccess } from './access-store.ts'
 import { ACCESS_FILE, channelMode, ENV_FILE, routed, SLOT, STATE_DIR } from './config.ts'
 
@@ -71,21 +72,24 @@ function freeBytes(): number | undefined {
   }
 }
 
-export function doctorReport(info: { botUsername: string; pluginVersion: string; claudeVersion?: string }): string {
+export function doctorReport(info: { botUsername: string; pluginVersion: string; claudeVersion?: string }, t: T): string {
   const now = Date.now()
   const header = [
-    `Bot @${info.botUsername || '?'} · plugin ${info.pluginVersion} · Claude Code ${info.claudeVersion ?? '?'} · Bun ${Bun.version}`,
-    `Mode: ${routed ? `router, session "${SLOT}"` : channelMode.poll ? 'single session, polling' : 'not polling'} (${channelMode.reason})`,
+    t('doctorVersions', { bot: info.botUsername || '?', plugin: info.pluginVersion, claude: info.claudeVersion ?? '?', bun: Bun.version }),
+    t('doctorMode', {
+      mode: routed ? t('doctorModeRouter', { slot: SLOT }) : channelMode.poll ? t('doctorModeSingle') : t('doctorModeOff'),
+      reason: channelMode.reason,
+    }),
   ]
   const checks = [
-    ...checkAccess(loadAccess(), groupTitles()),
-    checkFileMode('.env (bot token)', modeOf(ENV_FILE)),
-    checkFileMode('access.json', modeOf(ACCESS_FILE)),
-    checkLog('Server log', logSummary(join(STATE_DIR, 'logs', `server-${SLOT}.log`), now)),
-    ...(routed ? [checkLog('Router log', logSummary(join(STATE_DIR, 'router', 'router.log'), now))] : []),
-    checkActivityHook(mtimeOf(join(STATE_DIR, 'activity', `${SLOT}.jsonl`)), now),
-    checkScheduled(listScheduled(scheduleDir(STATE_DIR)).map(s => s.at), now),
-    checkDisk(freeBytes()),
+    ...checkAccess(loadAccess(), groupTitles(), t),
+    checkFileMode(t('doctorEnvFile'), modeOf(ENV_FILE), t),
+    checkFileMode('access.json', modeOf(ACCESS_FILE), t),
+    checkLog(t('doctorServerLog'), logSummary(join(STATE_DIR, 'logs', `server-${SLOT}.log`), now), t),
+    ...(routed ? [checkLog(t('doctorRouterLog'), logSummary(join(STATE_DIR, 'router', 'router.log'), now), t)] : []),
+    checkActivityHook(mtimeOf(join(STATE_DIR, 'activity', `${SLOT}.jsonl`)), now, t),
+    checkScheduled(listScheduled(scheduleDir(STATE_DIR)).map(s => s.at), now, t),
+    checkDisk(freeBytes(), t),
   ]
-  return formatReport(header, checks)
+  return formatReport(header, checks, t)
 }

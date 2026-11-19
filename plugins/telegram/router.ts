@@ -37,6 +37,7 @@ import { cpus, homedir, loadavg } from 'node:os'
 import { basename, join } from 'node:path'
 import type { Socket } from 'bun'
 import { createLogger, parseLevel } from './lib/log.ts'
+import { type Key, translator } from './lib/i18n.ts'
 import { retryDelayMs } from './lib/retry.ts'
 import { deliverDue, scheduleDir, scheduledSender } from './lib/schedule.ts'
 import { isNewer } from './lib/version.ts'
@@ -46,6 +47,8 @@ import { isNewer } from './lib/version.ts'
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels', 'telegram')
 const ROUTER_DIR = join(STATE_DIR, 'router')
+/** Translator for what the router posts (/language). */
+const t = translator(STATE_DIR)
 const SOCKET = join(STATE_DIR, 'router.sock')
 const SLOTS_FILE = join(ROUTER_DIR, 'slots.json')
 const QUEUE_FILE = join(ROUTER_DIR, 'queue.json')
@@ -396,11 +399,11 @@ function capacity(): { ok: boolean; why: string; limit: number } {
   const limitMem = n + Math.max(0, Math.floor((mem.available - reserve) / cost))
   const limit = MAX_SESSIONS > 0 ? Math.min(MAX_SESSIONS, limitMem) : limitMem
   if (n >= limit) {
-    return { ok: false, why: `memory (${Math.round(mem.available)} MB free, ${Math.round(reserve)} MB reserved, ~${Math.round(cost)} MB per session)`, limit }
+    return { ok: false, why: t('routerWhyMemory', { free: Math.round(mem.available), reserve: Math.round(reserve), cost: Math.round(cost) }), limit }
   }
   const load = loadavg()[0]!
   const cores = cpus().length
-  if (load > cores * 2) return { ok: false, why: `CPU load ${load.toFixed(1)} on ${cores} cores`, limit }
+  if (load > cores * 2) return { ok: false, why: t('routerWhyCpu', { load: load.toFixed(1), cores }), limit }
   return { ok: true, why: '', limit }
 }
 
@@ -701,7 +704,7 @@ async function handleUpdate(u: any): Promise<void> {
     if (msg && ACTIONABLE.some(k => k in msg) && allowedInGroup(chatId, from)) {
       await api('sendMessage', {
         chat_id: chatId,
-        text: 'Open or create a topic to talk to a session: each topic is its own Claude Code session. /sessions lists them.',
+        text: t('routerUseTopic'),
       }).catch(() => {})
     }
     return
@@ -720,7 +723,7 @@ async function handleUpdate(u: any): Promise<void> {
   }
   const r = runtime(slot.name)
   if (cq && !alive(r.pid)) {
-    await api('answerCallbackQuery', { callback_query_id: cq.id, text: 'That session is not running any more.' }).catch(() => {})
+    await api('answerCallbackQuery', { callback_query_id: cq.id, text: t('routerNotRunning') }).catch(() => {})
     return
   }
   if (msg && !ACTIONABLE.some(k => k in msg)) return
@@ -744,13 +747,13 @@ async function wake(slot: Slot): Promise<void> {
     if (!r.queuedNotice) {
       r.queuedNotice = true
       const busy = running().filter(s => !s.pinned).map(s => s.title ?? s.name).join(', ')
-      await notify(slot, `⏳ Queued: no room for another session right now (${cap.why}). Busy: ${busy || 'none'}. It starts as soon as one finishes.`)
+      await notify(slot, t('routerQueued', { why: cap.why, busy: busy || t('routerNone') }))
     }
     return
   }
   if (slot.chat) {
     const resuming = validSession(slot.sessionId)
-    const id = await notify(slot, resuming ? '⏳ Waking this topic’s session…' : '⏳ Starting a new session for this topic…')
+    const id = await notify(slot, t(resuming ? 'routerWaking' : 'routerStarting'))
     if (id) r.startNotice = { chat: slot.chat, id }
   }
   await start(slot)
@@ -781,24 +784,34 @@ async function pruneDeletedTopics(): Promise<void> {
   saveSlots()
 }
 
+const KNOWN_STATES = Object.fromEntries(
+  ['starting', 'busy', 'idle', 'waiting', 'crashed', 'queued', 'closed', 'stopped'].map(s => [`routerState.${s}`, true]),
+)
+
 async function reportSessions(chatId: string, thread?: number): Promise<void> {
   await pruneDeletedTopics()
   const cap = capacity()
   const rss = treeRss(running().map(s => runtime(s.name).pid!))
-  const lines = [`Sessions (${running().length} running, room for about ${cap.limit}):`, '']
+  const lines = [t('routerSessions', { running: running().length, limit: cap.limit }), '']
   const sorted = [...slots.values()].sort((a, b) => b.lastActive - a.lastActive)
   for (const s of sorted) {
     const r = runtime(s.name)
     const on = alive(r.pid)
     const state = on ? (r.status ?? 'starting') : r.gaveUp ? 'crashed' : r.queue.length ? 'queued' : s.closed ? 'closed' : 'stopped'
     const ago = Math.round((Date.now() - s.lastActive) / 60_000)
+    const stateKey = `routerState.${state}` as Key
     lines.push(
-      `${on ? '🟢' : '⚪️'} ${s.name === 'main' ? 'main (DM)' : s.title ?? s.name} — ${state}` +
-        `${on ? `, ${rss.get(r.pid!) ?? '?'} MB` : ''}, active ${ago} min ago`,
+      t('routerSessionLine', {
+        icon: on ? '🟢' : '⚪️',
+        name: s.name === 'main' ? t('routerMainDm') : (s.title ?? s.name),
+        state: stateKey in KNOWN_STATES ? t(stateKey) : state,
+        mem: on ? `, ${rss.get(r.pid!) ?? '?'} MB` : '',
+        ago,
+      }),
     )
   }
   const mem = memInfoMB()
-  lines.push('', `Memory free: ${Math.round(mem.available)} of ${Math.round(mem.total)} MB · idle stop after ${IDLE_MS / 60_000} min`)
+  lines.push('', t('routerMemory', { free: Math.round(mem.available), total: Math.round(mem.total), idle: IDLE_MS / 60_000 }))
   await api('sendMessage', { chat_id: chatId, text: lines.join('\n'), ...(thread ? { message_thread_id: thread } : {}) }).catch(() => {})
 }
 
@@ -838,7 +851,7 @@ async function tick(): Promise<void> {
         log(`${slot.name}: stopped`)
         r.quickExits = 0
         if (r.updateTo && slot.pinned) {
-          void notify(slot, `🔄 ${r.updateTo} is installed. Restarting this session to use it; it resumes the same conversation in a few seconds.`)
+          void notify(slot, t('routerUpdating', { version: r.updateTo }))
         }
         r.updateTo = undefined
       } else {
@@ -851,7 +864,7 @@ async function tick(): Promise<void> {
             dirty = true
           } else {
             r.gaveUp = true
-            await notify(slot, '⚠️ This session keeps crashing right after it starts, so I stopped restarting it. Send a message here to try again.')
+            await notify(slot, t('routerCrashLoop'))
           }
         }
       }
@@ -877,9 +890,9 @@ async function startTimedOut(slot: Slot, r: Runtime): Promise<void> {
   log(`${slot.name}: not connected after ${START_TIMEOUT_MS / 1000}s${again ? ', restarting once' : ', giving up'}`)
   await notify(
     slot,
-    `⚠️ This session started but has not connected after ${START_TIMEOUT_MS / 60_000} minutes. ` +
-      (again ? 'Restarting it once.' : 'Gave up; send a message here to try again.') +
-      (screen ? `\n\nLast lines of its terminal:\n${screen.slice(-800)}` : ''),
+    t('routerNotConnected', { min: START_TIMEOUT_MS / 60_000 }) +
+      t(again ? 'routerRetryOnce' : 'routerGaveUp') +
+      (screen ? `\n\n${t('routerLastLines')}\n${screen.slice(-800)}` : ''),
   )
   r.connected = true // report once per start
   if (again) {

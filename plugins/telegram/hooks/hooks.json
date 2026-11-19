@@ -33,6 +33,17 @@
           }
         ]
       }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/permission-telegram.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

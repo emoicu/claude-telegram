@@ -5,7 +5,7 @@
 **Drive Claude Code from Telegram: chat with your sessions, watch them work, and steer them from your phone.**
 
 [![test](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml)
-[![version](https://img.shields.io/badge/version-0.0.7--emoicu.44-blue)](plugins/telegram/.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-0.0.7--emoicu.45-blue)](plugins/telegram/.claude-plugin/plugin.json)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-channel%20plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
@@ -32,7 +32,7 @@ A personally maintained fork of the official [Claude Code Telegram channel plugi
 - Progress checklists that update in place instead of flooding the chat, with a 🎉 effect when done
 
 **🕹️ Control from your phone**
-- `AskUserQuestion` prompts arrive as buttons; permission prompts as **Allow / Deny**
+- `AskUserQuestion` prompts arrive as buttons; permission prompts as **Allow / Deny**, plus **Always allow** to stop asking for the same kind of call in this conversation
 - Reaction shortcuts: 👍 go ahead, 👎 try another way, 🤔 explain simpler, 🔥 just do it, 🙏 pause…
 - Session commands without touching the terminal: `/new`, `/model`, `/effort`, `/usage`, `/session`
 - A notice when the terminal is waiting for someone
@@ -188,6 +188,7 @@ Based on upstream plugin v0.0.7 (commit `b5b01ac`); the latest upstream change t
   - Any other value is treated as the path of your own executable. It receives `TELEGRAM_HELPER_CLAUDE_PID`, `TELEGRAM_HELPER_CHAT_ID`, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_STATE_DIR` in its environment and must return quickly (it is killed after 30 seconds).
 - **`/session` command**: replies with the owning session's model, effort, permission mode, context size (prompt tokens of the latest API call), message count, API-equivalent cost so far, working directory and versions, read from local files without a model turn. Set `TELEGRAM_CONTEXT_WINDOW` (tokens) to also show context as a percentage.
 - **Terminal-prompt notice**: a `Notification` hook (`hooks/notify-telegram.ts`) messages the chat when Claude Code waits for someone at the terminal, for example a built-in safety check that is never relayed to channels. It only notifies, never answers; prompts already relayed with Allow/Deny buttons are skipped. Runs only in the channel session; disable with `TELEGRAM_NOTIFY=off`.
+- **Always allow**: the channel's permission verdict only covers one call, so a `PermissionRequest` hook (`hooks/permission-telegram.ts`) records each prompt's permission suggestions. Pressing **Always allow** marks them as remembered, and the hook then allows later prompts with the same suggestions (same allow rules or directories; the exact same call when Claude Code suggests none) in the same conversation for up to 24 hours, passing them to Claude Code as session rules. Mode changes are never remembered. The hook prints nothing otherwise, so the normal prompt and its relay go ahead. State lives in `~/.claude/channels/telegram/permissions/`.
 - **Failure alerts**: a `StopFailure` hook (`hooks/failure-telegram.ts`) messages the chat when a turn ends on an API error (rate or usage limit, overload, expired login, billing, ...), with the error text and what to do. The same error in the same session is reported at most once every 10 minutes. Runs only in the channel session; disable with `TELEGRAM_NOTIFY=off`.
 - **Live draft and Stop**: in direct messages the work status is a streamed draft (`sendMessageDraft`) showing the current step and what Claude last wrote, with Telegram's stop button; in groups it is a status message with a ⏹ Stop button. Stopping presses Escape in the session's tmux pane, like a user at the terminal. `TELEGRAM_STATUS_STYLE=message` keeps the old status message everywhere.
 - **Reaction status**: the user's message shows where it is: 👀 received, ✍ while Claude works on it (messages sent mid-turn join the running turn), 👍 once the turn is over, cleared if it was stopped. Needs the live status; `TELEGRAM_REACTION_STATUS=off` falls back to the static `ackReaction`. With it on, the live status line only appears for turns longer than 30 seconds (otherwise 3 s for drafts, 8 s for status messages); `TELEGRAM_STATUS_AFTER_SEC` sets that delay.

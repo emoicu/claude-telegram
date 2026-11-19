@@ -12,7 +12,7 @@ export const zh: Messages = {
   cancelledMessage: '✖ 已取消',
 
   // Pairing and /start, /status
-  start: '**🤖 Telegram 上的 Claude Code**\n\n这个机器人把 Telegram 接到你服务器上的一个 Claude Code 会话。\n\n#### 🔗 配对\n\n1. 给我发任意一条消息，拿到 6 位配对码\n\n2. 在 Claude Code 里运行：`/telegram:access pair <配对码>`\n\n之后你在这里发的消息就会到达那个会话。发 /help 看它能做什么。',
+  start: '**🤖 Telegram 上的 Claude Code**\n\n这个机器人把 Telegram 接到你服务器上的一个 Claude Code 会话。\n\n**🔗 配对**\n\n1. 给我发任意一条消息，拿到 6 位配对码\n\n2. 在 Claude Code 里运行：`/telegram:access pair <配对码>`\n\n之后你在这里发的消息就会到达那个会话。发 /help 看它能做什么。',
   pairRequired: '🔗 需要先配对。请在 Claude Code 里运行：\n\n/telegram:access pair {code}',
   pairStillPending: '⏳ 仍在等待批准。请在 Claude Code 里运行：\n\n/telegram:access pair {code}',
   pairApproved: '✅ 配对成功！跟 Claude 打个招呼吧。发 /help 看它能做什么。',
@@ -39,16 +39,16 @@ export const zh: Messages = {
   // /help
   helpTitle: '**🤖 Telegram 上的 Claude Code**',
   helpIntro: '在这里发的消息会交给你服务器上的一个 Claude Code 会话。它能读写代码、执行命令、上网搜索，并在这里回复你。',
-  helpTalkTitle: '#### 💬 怎么跟它说话',
+  helpTalkTitle: '**💬 怎么跟它说话**',
   helpTalk1: '- **文字、图片、文件、语音**都会转过去；**引用回复**某条消息就是在指那条消息。',
   helpTalk2: '- 它干活时会显示实时状态，告诉你正在做什么；按 **Stop** 可以打断这一轮。',
   helpTalk3: '- 长任务会显示一个 ✅ 清单并原地更新；做完后会发新消息提醒你。',
   helpTalk4: '- 它提问时会给出**按钮**；需要权限时会有**允许 / 拒绝**。',
   helpTalk5: '- 时间按**你自己的时区**显示。',
-  helpReactionsTitle: '#### 👍 表情回应当快捷指令',
+  helpReactionsTitle: '**👍 表情回应当快捷指令**',
   helpReactionsIntro: '对它的某条消息点个表情：',
   helpReactionsNone: '（未配置）',
-  helpCommandsTitle: '#### ⌨️ 命令',
+  helpCommandsTitle: '**⌨️ 命令**',
   helpCmdSession: '- `/session` 当前会话的模型、思考强度、上下文大小和费用',
   helpCmdDoctor: '- `/doctor` 自检：访问权限、文件权限、日志、hook、提醒',
   helpCmdLanguage: '- `/language` 机器人消息的语言',
@@ -58,7 +58,7 @@ export const zh: Messages = {
   helpCmdEffort: '- `/effort [级别]` 思考强度（不带级别：用按钮选）',
   helpCmdSessions: '- `/sessions` 所有会话、它们的状态和内存',
   helpCmdStatus: '- `/status` 配对状态 · `/help` 本指南',
-  helpTopicsTitle: '#### 🗂 话题：每个话题一个会话',
+  helpTopicsTitle: '**🗂 话题：每个话题一个会话**',
   helpTopics1: '- 在论坛群里，**每个话题都是独立的会话**，有各自的记忆；私聊是主会话。',
   helpTopics2: '- 话题名和某个项目文件夹同名时，就在那个文件夹里工作。',
   helpTopics3: '- 收到第一条消息时启动会话，空闲后自动停止；下一条消息会接着原来的对话。',
@@ -231,7 +231,7 @@ export const zh: Messages = {
 
   // /doctor
   doctorTitle: '**🩺 自检：{verdict}**',
-  doctorNeedsAttention: '#### 需要注意',
+  doctorNeedsAttention: '**需要注意**',
   doctorOkCount: '✅ {n} 项正常',
   doctorAllGood: '✅ 一切正常',
   doctorFails: '❌ {fails} 个问题',

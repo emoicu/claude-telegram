@@ -12,7 +12,7 @@ export const en = {
   cancelledMessage: '✖ Cancelled',
 
   // Pairing and /start, /status
-  start: '**🤖 Claude Code on Telegram**\n\nThis bot connects Telegram to a Claude Code session on your server.\n\n#### 🔗 Pairing\n\n1. Send me any message: you get a 6-character code\n\n2. Run it in Claude Code: `/telegram:access pair <code>`\n\nAfter that, your messages here reach the session. Send /help to see what it can do.',
+  start: '**🤖 Claude Code on Telegram**\n\nThis bot connects Telegram to a Claude Code session on your server.\n\n**🔗 Pairing**\n\n1. Send me any message: you get a 6-character code\n\n2. Run it in Claude Code: `/telegram:access pair <code>`\n\nAfter that, your messages here reach the session. Send /help to see what it can do.',
   pairRequired: '🔗 Pairing required. Run this in Claude Code:\n\n/telegram:access pair {code}',
   pairStillPending: '⏳ Still waiting for approval. Run this in Claude Code:\n\n/telegram:access pair {code}',
   pairApproved: '✅ Paired! Say hi to Claude. Send /help to see what it can do.',
@@ -39,16 +39,16 @@ export const en = {
   // /help
   helpTitle: '**🤖 Claude Code on Telegram**',
   helpIntro: 'Messages here go to a Claude Code session on your server. It can read and change code, run commands and search the web, and answers here.',
-  helpTalkTitle: '#### 💬 Talking to it',
+  helpTalkTitle: '**💬 Talking to it**',
   helpTalk1: '- **Text, photos, files, voice** are passed on; **quote-reply** a message to point at it.',
   helpTalk2: '- While it works you see a live status with what it is doing; **Stop** interrupts the turn.',
   helpTalk3: '- Long tasks show a ✅ checklist that updates in place; a new message pings you when done.',
   helpTalk4: '- Questions arrive as **buttons**; permission prompts have **Allow / Deny**.',
   helpTalk5: '- Times are shown in **your own time zone**.',
-  helpReactionsTitle: '#### 👍 Reactions as shortcuts',
+  helpReactionsTitle: '**👍 Reactions as shortcuts**',
   helpReactionsIntro: 'React to one of its messages:',
   helpReactionsNone: '(none configured)',
-  helpCommandsTitle: '#### ⌨️ Commands',
+  helpCommandsTitle: '**⌨️ Commands**',
   helpCmdSession: '- `/session` model, effort, context size and cost of this session',
   helpCmdDoctor: '- `/doctor` health check: access, permissions, logs, hooks, reminders',
   helpCmdLanguage: '- `/language` language of the bot’s messages',
@@ -58,7 +58,7 @@ export const en = {
   helpCmdEffort: '- `/effort [level]` reasoning effort (no level: pick from buttons)',
   helpCmdSessions: '- `/sessions` every session, its state and memory',
   helpCmdStatus: '- `/status` pairing state · `/help` this guide',
-  helpTopicsTitle: '#### 🗂 Topics: one session each',
+  helpTopicsTitle: '**🗂 Topics: one session each**',
   helpTopics1: '- In the forum group, **each topic is its own session** with its own memory; direct messages are the main session.',
   helpTopics2: '- A topic named like a project folder works in that folder.',
   helpTopics3: '- Sessions start on the first message and stop when idle; the next message resumes the same conversation.',
@@ -231,7 +231,7 @@ export const en = {
 
   // /doctor
   doctorTitle: '**🩺 Doctor: {verdict}**',
-  doctorNeedsAttention: '#### Needs attention',
+  doctorNeedsAttention: '**Needs attention**',
   doctorOkCount: '✅ {n} {n:check|checks} OK',
   doctorAllGood: '✅ All good',
   doctorFails: '❌ {fails} {fails:problem|problems}',

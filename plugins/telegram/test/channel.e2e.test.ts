@@ -221,7 +221,7 @@ describe('/doctor', () => {
     const msg = await tg.waitFor(c => said(c, /Doctor/), 'doctor report')
     expect(msg.method).toBe('sendRichMessage')
     expect(textOf(msg)).toContain('Bot @test_bot')
-    expect(textOf(msg)).toContain('#### Needs attention\n\n- ⚠️ Group -100123: every member can talk to Claude, without even mentioning the bot')
+    expect(textOf(msg)).toContain('**Needs attention**\n\n- ⚠️ Group -100123: every member can talk to Claude, without even mentioning the bot')
     expect(textOf(msg)).toContain('- ✅ .env (bot token) is private')
   })
 
@@ -284,7 +284,7 @@ describe('command answers', () => {
     command(OWNER, '/start')
     const rich = await tg.waitFor(c => said(c, /Pairing/), '/start')
     expect(rich.method).toBe('sendRichMessage')
-    expect(textOf(rich)).toContain('#### 🔗 Pairing')
+    expect(textOf(rich)).toContain('**🔗 Pairing**')
 
     tg.failNext('sendRichMessage', { error_code: 400, description: 'Bad Request: rich messages are not supported' })
     command(OWNER, '/start')

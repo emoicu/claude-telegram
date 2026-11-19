@@ -6,7 +6,7 @@ All notable changes to this plugin. The format follows [Keep a Changelog](https:
 
 ### Changed
 
-- Smaller headings in rich messages: a message's title is a bold line and its sections use level-4 headings, since larger ones show very big in Telegram (`/start`, `/help`, `/session`, `/doctor`, `/usage`, `/sessions`, the progress checklist).
+- No headings in rich messages: titles and section names are bold lines instead of headings, which show very big in Telegram (`/start`, `/help`, `/session`, `/doctor`, `/usage`, `/sessions`, the progress checklist).
 
 ## [1.2.1] - 2026-11-19
 

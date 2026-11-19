@@ -1082,6 +1082,8 @@ function registerCommands(): void {
     { command: 'doctor', description: t('cmdDoctor') },
     ...(topic ? [] : [{ command: 'language', description: t('cmdLanguage') }]),
     ...(COMMAND_HELPER ? HELPER_COMMANDS.map(c => ({ command: c.command, description: t(c.key) })) : []),
+    // The router answers /sessions itself; without it the command does nothing.
+    ...(routed ? [{ command: 'sessions', description: t('cmdSessions') }] : []),
   ]
   const scope = topic ? { type: 'chat' as const, chat_id: TOPIC_CHAT! } : { type: 'all_private_chats' as const }
   void bot.api.setMyCommands(commands, { scope }).catch(err => log.warn('setMyCommands failed', err))

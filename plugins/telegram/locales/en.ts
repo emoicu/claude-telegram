@@ -25,6 +25,7 @@ export const en = {
   cmdStatus: 'Check your pairing status',
   cmdSession: 'Show model, effort and context of the session',
   cmdDoctor: 'Check that everything works',
+  cmdSessions: 'All sessions, their state and memory',
   cmdLanguage: 'Change the bot’s language',
   cmdNew: 'Start a fresh conversation',
   cmdUsage: 'Show plan usage',

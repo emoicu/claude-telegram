@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Channel, FakeTelegram } from './harness'
 
@@ -301,5 +302,21 @@ describe('command answers', () => {
     command(OWNER, '/doctor')
     const msg = await tg.waitFor(c => said(c, /Doctor/), '/doctor')
     expect(textOf(msg)).toMatch(/- ✅ [^\n]+\n\n- ✅ /)
+  })
+})
+
+describe('command menu', () => {
+  const menu = () => tg.waitFor(c => c.method === 'setMyCommands', 'command menu')
+
+  test('lists /sessions under the router, which answers it', async () => {
+    await boot(allowlist, { TELEGRAM_ROUTER_SOCKET: join(tmpdir(), `no-router-${process.pid}.sock`) })
+    const commands = (await menu()).body.commands.map((c: any) => c.command)
+    expect(commands).toContain('sessions')
+    expect(commands).toContain('doctor')
+  })
+
+  test('leaves /sessions out without the router', async () => {
+    await boot(allowlist)
+    expect((await menu()).body.commands.map((c: any) => c.command)).not.toContain('sessions')
   })
 })

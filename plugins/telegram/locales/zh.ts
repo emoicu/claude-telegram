@@ -25,6 +25,7 @@ export const zh: Messages = {
   cmdStatus: '查看配对状态',
   cmdSession: '查看会话的模型、思考强度和上下文',
   cmdDoctor: '检查一切是否正常',
+  cmdSessions: '所有会话的状态和内存',
   cmdLanguage: '切换机器人的语言',
   cmdNew: '开始新对话',
   cmdUsage: '查看套餐用量',

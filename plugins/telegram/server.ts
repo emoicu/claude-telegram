@@ -38,6 +38,7 @@ import {API_ROOT, channelMode, ENV_FILE, ignored, INBOX_DIR, log, PID_FILE, ROUT
   STATE_DIR, TOKEN, TOPIC_CHAT, TOPIC_THREAD,
 } from './core/config.ts'
 import { startInboxPruning } from './core/inbox.ts'
+import { doctorReport } from './core/doctor.ts'
 import { activityFile, readActivity, stopFlagFile } from './lib/activity.ts'
 import { retryDelayMs } from './lib/retry.ts'
 import { handlePermissionButtons, relayPermissionRequests } from './core/permissions.ts'
@@ -862,6 +863,7 @@ function helpText(): string {
     '',
     '### ⌨️ Commands',
     '- `/session` model, effort, context size and cost of this session',
+    '- `/doctor` health check: access, permissions, logs, hooks, reminders',
     ...(COMMAND_HELPER
       ? [
           '- `/new` start a fresh conversation',
@@ -1057,6 +1059,22 @@ function sessionReport(): string {
 }
 
 if (channelMode.poll) {
+  // /doctor: health check of the channel (core/doctor.ts).
+  bot.command('doctor', async ctx => {
+    const gated = dmCommandGate(ctx)
+    if (!gated) return
+    if (!gated.access.allowFrom.includes(gated.senderId)) {
+      await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
+      return
+    }
+    let claudeVersion: string | undefined
+    try {
+      claudeVersion = JSON.parse(readFileSync(join(CLAUDE_DIR, 'sessions', `${channelMode.claudePid}.json`), 'utf8')).version
+    } catch (err) {
+      ignored('read Claude session info', err)
+    }
+    await ctx.reply(doctorReport({ botUsername, pluginVersion: pluginVersion(), claudeVersion }))
+  })
   bot.command('session', async ctx => {
     const gated = dmCommandGate(ctx)
     if (!gated) return
@@ -1906,6 +1924,7 @@ if (channelMode.poll && !routed) void (async () => {
               { command: 'help', description: 'What this bot can do' },
               { command: 'status', description: 'Check your pairing status' },
               { command: 'session', description: 'Show model, effort and context of the session' },
+              { command: 'doctor', description: 'Check that everything works' },
               ...(COMMAND_HELPER ? HELPER_COMMANDS : []),
             ],
             { scope: { type: 'all_private_chats' } },
@@ -1987,6 +2006,7 @@ if (routed) void (async () => {
   botUsername = bot.botInfo.username
   const commands = [
     { command: 'session', description: 'Show model, effort and context of the session' },
+    { command: 'doctor', description: 'Check that everything works' },
     ...(COMMAND_HELPER ? HELPER_COMMANDS : []),
   ]
   if (TOPIC_CHAT) {

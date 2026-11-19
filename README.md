@@ -5,7 +5,7 @@
 **Drive Claude Code from Telegram: chat with your sessions, watch them work, and steer them from your phone.**
 
 [![test](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml)
-[![version](https://img.shields.io/badge/version-0.0.7--emoicu.48-blue)](plugins/telegram/.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-0.0.7--emoicu.49-blue)](plugins/telegram/.claude-plugin/plugin.json)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-channel%20plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
@@ -34,7 +34,7 @@ A personally maintained fork of the official [Claude Code Telegram channel plugi
 **🕹️ Control from your phone**
 - `AskUserQuestion` prompts arrive as buttons; permission prompts as **Allow / Deny**, plus **Always allow** to stop asking for the same kind of call in this conversation
 - Reaction shortcuts: 👍 go ahead, 👎 try another way, 🤔 explain simpler, 🔥 just do it, 🙏 pause…
-- Session commands without touching the terminal: `/new`, `/model`, `/effort`, `/usage`, `/session`
+- Session commands without touching the terminal: `/new`, `/model`, `/effort`, `/usage`, `/session`, `/doctor`
 - A notice when the terminal is waiting for someone
 - Scheduled messages and reminders (`schedule` tool), one-off or daily / weekly, sent on time by the plugin itself at no Claude usage
 - An alert when a turn fails on a rate or usage limit, API overload, expired login or billing problem
@@ -95,6 +95,7 @@ Send messages, photos or files to the bot as you would to a person. Reply to a m
 | --- | --- |
 | `/help` | Guide to everything this install supports |
 | `/session` | Model, effort, context size, cost and versions of the current session |
+| `/doctor` | Health check: who can reach Claude, file permissions, recent errors in the logs, hooks, reminders, disk |
 | `/new` | Start a fresh conversation |
 | `/model [name]` | Switch model; without a name, shows buttons |
 | `/effort [level]` | Change thinking effort; without a level, shows buttons |
@@ -173,7 +174,7 @@ bun install
 bun run check   # strict type check (tsc), lint (Biome), unit and end-to-end tests
 ```
 
-Pure helpers live in `plugins/telegram/lib/` with tests next to them. End-to-end tests in `plugins/telegram/test/` run `server.ts` and the hooks against a fake Bot API server (`test/harness.ts`) and drive them as Claude Code would over MCP: inbound gating and pairing, the reply, progress and schedule tools, permission buttons including Always allow, reaction shortcuts and the hooks. No bot token or network is needed. CI runs the same checks on every push. `scripts/check-upstream.sh` lists upstream changes since the fork base. See [CLAUDE.md](CLAUDE.md) for repository conventions.
+Pure helpers live in `plugins/telegram/lib/` with tests next to them, stateful parts of the server in `plugins/telegram/core/`. End-to-end tests in `plugins/telegram/test/` run `server.ts` and the hooks against a fake Bot API server (`test/harness.ts`) and drive them as Claude Code would over MCP: inbound gating and pairing, the reply, progress and schedule tools, permission buttons including Always allow, reaction shortcuts and the hooks. No bot token or network is needed. CI runs the same checks on every push, plus `bun audit` of the production dependencies; Dependabot proposes dependency updates weekly. `scripts/check-upstream.sh` lists upstream changes since the fork base. See [CLAUDE.md](CLAUDE.md) for repository conventions.
 
 ## Changes from upstream
 
@@ -188,6 +189,8 @@ Based on upstream plugin v0.0.7 (commit `b5b01ac`); the latest upstream change t
 - **Host-handled session commands**: when `TELEGRAM_COMMAND_HELPER` points at an executable, `/new`, `/usage`, `/model [name]` and `/effort [level]` are handled by the plugin, which runs `<helper> <command> [arg]` instead of forwarding the message to Claude. The commands are added to the bot menu, and the message gets a 👌 reaction as acknowledgement. Arguments are limited to letters, digits and `. _ : -`. A bare `/model` or `/effort` gets inline buttons under the message (with a Cancel button); picking one runs the helper with that option.
   - `TELEGRAM_COMMAND_HELPER=builtin` uses the bundled [`helpers/tmux-session-helper.ts`](plugins/telegram/helpers/tmux-session-helper.ts). It needs Claude Code running inside tmux: it waits until the session is idle, types the command into the session's pane (found via `~/.claude/sessions/<pid>.json`), reads the result from the screen and reports it to the chat.
   - Any other value is treated as the path of your own executable. It receives `TELEGRAM_HELPER_CLAUDE_PID`, `TELEGRAM_HELPER_CHAT_ID`, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_STATE_DIR` in its environment and must return quickly (it is killed after 30 seconds).
+- **`/doctor` command**: checks access (open groups, pairing mode, waiting codes), that `.env` and `access.json` are private, warnings and errors in the server and router logs of the last 24 hours, that the activity hook reports, overdue scheduled messages and free disk space, and answers with a one-line verdict plus every check. Checks are in `lib/doctor.ts`.
+- **Retries**: Bot API calls that hit a rate limit (429) wait the `retry_after` Telegram asks for (up to 60 s); server errors back off 1, 2, 4 s; dropped connections are retried only for calls that are safe to repeat, never for sends. Applies to the channel server and the router.
 - **`/session` command**: replies with the owning session's model, effort, permission mode, context size (prompt tokens of the latest API call), message count, API-equivalent cost so far, working directory and versions, read from local files without a model turn. Set `TELEGRAM_CONTEXT_WINDOW` (tokens) to also show context as a percentage.
 - **Terminal-prompt notice**: a `Notification` hook (`hooks/notify-telegram.ts`) messages the chat when Claude Code waits for someone at the terminal, for example a built-in safety check that is never relayed to channels. It only notifies, never answers; prompts already relayed with Allow/Deny buttons are skipped. Runs only in the channel session; disable with `TELEGRAM_NOTIFY=off`.
 - **Scheduled messages**: the `schedule` tool queues a message (rich Markdown, `{{time:…}}` tokens work) for a time up to a year ahead, optionally repeating daily or weekly; `scheduled` lists or cancels them. Each one is a file in `~/.claude/channels/telegram/scheduled/`. The process that polls Telegram checks every 15 s and sends them: the router in router mode (so a stopped topic session still gets its reminder), the channel server otherwise. The allowlist is checked again at send time; a failed send is retried a minute later, up to 5 times.

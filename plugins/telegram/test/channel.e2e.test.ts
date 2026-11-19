@@ -207,3 +207,22 @@ describe('retries', () => {
     expect(tg.sent('sendMessage').filter(c => c.body.text === 'no retry')).toHaveLength(1)
   }, 15_000)
 })
+
+describe('/doctor', () => {
+  test('reports the setup and flags an open group', async () => {
+    await boot({ ...allowlist, groups: { '-100123': { requireMention: false, allowFrom: [] } } })
+    tg.dm(OWNER, '/doctor', { entities: [{ type: 'bot_command', offset: 0, length: 7 }] })
+    const msg = await tg.waitFor(c => c.method === 'sendMessage' && /Doctor/.test(c.body.text ?? ''), 'doctor report')
+    expect(msg.body.text).toContain('Bot @test_bot')
+    expect(msg.body.text).toContain('⚠️ Group -100123: every member can talk to Claude, without even mentioning the bot')
+    expect(msg.body.text).toContain('✅ .env (bot token) is private')
+  })
+
+  test('strangers get nothing', async () => {
+    await boot(allowlist)
+    tg.dm(STRANGER, '/doctor', { entities: [{ type: 'bot_command', offset: 0, length: 7 }] })
+    tg.dm(OWNER, 'marker')
+    await ch.waitNotification('notifications/claude/channel', p => p.content === 'marker')
+    expect(tg.sent('sendMessage').some(c => /Doctor/.test(c.body.text ?? ''))).toBe(false)
+  })
+})

@@ -53,7 +53,7 @@ describe('formatUsage', () => {
     const at2 = Date.UTC(2026, 10, 22, 18, 0) / 1000
     expect(text).toBe(
       [
-        '### 📊 Claude 用量',
+        '**📊 Claude 用量**',
         '',
         '- **当前会话（5 小时额度）** 🟢 17%  ',
         '  `██░░░░░░░░`  ',

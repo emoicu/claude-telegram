@@ -78,7 +78,7 @@ function title(raw: string, t: T): string {
  * per item. Falls back to the panel's own lines when nothing was recognized.
  */
 export function formatUsage(panel: { items: UsageItem[]; lines: string[] }, now: number, t: T = tEn): string {
-  const out = [`### ${t('helperUsageTitle')}`]
+  const out = [`**${t('helperUsageTitle')}**`]
   if (!panel.items.length) return [...out, '', ...panel.lines].join('\n')
   const blocks = panel.items.map(it => {
     const lines = [

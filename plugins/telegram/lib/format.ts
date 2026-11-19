@@ -69,7 +69,7 @@ export function renderChecklist(title: string | undefined, steps: Step[], starte
   const finished = done === steps.length
   const now = Math.floor(Date.now() / 1000)
   const at = (unix: number, f: string) => (rich ? `{{time:${unix}|${f}}}` : `{{time:${unix}}}`)
-  const head = rich ? `### 📋 ${title ?? t('checklistTitle')}` : `📋 ${title ?? t('checklistTitle')}`
+  const head = rich ? `**📋 ${title ?? t('checklistTitle')}**` : `📋 ${title ?? t('checklistTitle')}`
   const lines = steps.map(x => {
     const t = x.text.replace(/\s+/g, ' ').trim()
     if (rich) {

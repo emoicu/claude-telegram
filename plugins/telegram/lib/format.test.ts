@@ -78,7 +78,7 @@ describe('renderChecklist', () => {
   ]
   test('rich task list with a running footer', () => {
     const out = renderChecklist('Deploy', steps, 1794880000, true)
-    expect(out).toStartWith('### 📋 Deploy')
+    expect(out).toStartWith('**📋 Deploy**')
     expect(out).toContain('- [x] one')
     expect(out).toContain('- [ ] **two** ⏳')
     expect(out).toContain('- [ ] three')

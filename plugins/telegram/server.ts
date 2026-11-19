@@ -22,7 +22,7 @@ import { homedir } from 'node:os'
 import { execFile, execFileSync } from 'node:child_process'
 import { dirname, join, extname } from 'node:path'
 import {
-  chunk, clip, expandTimes, fmtDuration, fmtTokens, mdLines, plainMarkdown, renderChecklist, renderDraft, renderStatus, safeName,
+  chunk, clip, expandTimes, fmtDuration, fmtTokens, mdSpaced, plainMarkdown, renderChecklist, renderDraft, renderStatus, safeName,
   type Step,
 } from './lib/format.ts'
 import { scanTranscriptTail } from './lib/transcript.ts'
@@ -575,16 +575,6 @@ async function sayRich(chat_id: string, markdown: string, reply_markup?: InlineK
   }
 }
 
-/** Replace a message's text (and drop its buttons) with rich Markdown. */
-async function editRich(chat_id: string, message_id: number, markdown: string): Promise<void> {
-  try {
-    await (bot.api.raw as any).editMessageText({ chat_id, message_id, rich_message: { markdown } })
-  } catch (err) {
-    log.debug('rich edit rejected, editing as plain text', err)
-    await bot.api.editMessageText(chat_id, message_id, plainMarkdown(markdown)).catch(() => {})
-  }
-}
-
 const chatOf = (ctx: Context) => String(ctx.chat?.id ?? ctx.from?.id)
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
@@ -894,7 +884,7 @@ function helpText(): string {
     t('helpCmdStatus'),
   ]
   if (routed) out.push('', t('helpTopicsTitle'), t('helpTopics1'), t('helpTopics2'), t('helpTopics3'), t('helpTopics4'))
-  return out.join('\n')
+  return mdSpaced(out)
 }
 
 bot.command('help', async ctx => {
@@ -914,18 +904,18 @@ bot.command('status', async ctx => {
 
   if (access.allowFrom.includes(senderId)) {
     const name = ctx.from!.username ? `@${ctx.from!.username}` : senderId
-    await sayRich(chatOf(ctx), t('statusPaired', { name }))
+    await ctx.reply(t('statusPaired', { name }))
     return
   }
 
   for (const [code, p] of Object.entries(access.pending)) {
     if (p.senderId === senderId) {
-      await sayRich(chatOf(ctx), t('statusPending', { code }))
+      await ctx.reply(t('statusPending', { code }))
       return
     }
   }
 
-  await sayRich(chatOf(ctx), t('notPaired'))
+  await ctx.reply(t('notPaired'))
 })
 
 // LOCAL PATCH: host-handled session commands. Claude Code's slash commands
@@ -1064,15 +1054,14 @@ function sessionReport(): string {
     const ctx = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
     const share = CONTEXT_WINDOW ? Math.round((ctx / CONTEXT_WINDOW) * 100) : undefined
     const pct = share != null ? t('sessionContextPct', { pct: share, window: fmtTokens(CONTEXT_WINDOW) }) : ''
-    out.push(t('sessionContext', { tokens: fmtTokens(ctx), pct }))
-    if (share != null) out.push(`\`${usageBar(share)}\``)
+    out.push(t('sessionContext', { tokens: fmtTokens(ctx), pct }) + (share != null ? `\n\`${usageBar(share)}\`` : ''))
   } else {
     out.push(t('sessionNoContext'))
   }
   if (messages != null) out.push(t('sessionMessages', { n: messages }))
   if (cost?.totalCostUSD != null) out.push(t('sessionCost', { cost: Number(cost.totalCostUSD).toFixed(2) }))
   out.push('', t('sessionVersions', { claude: info.version ?? '?', plugin: pluginVersion() }))
-  return mdLines(out)
+  return mdSpaced(out)
 }
 
 // The command menu, in the language chosen with /language. A topic session
@@ -1108,10 +1097,10 @@ if (channelMode.poll) {
     const gated = dmCommandGate(ctx)
     if (!gated) return
     if (!gated.access.allowFrom.includes(gated.senderId)) {
-      await sayRich(chatOf(ctx), t('notPaired'))
+      await ctx.reply(t('notPaired'))
       return
     }
-    await sayRich(chatOf(ctx), t('languageChoose'), languageKeyboard())
+    await ctx.reply(t('languageChoose'), { reply_markup: languageKeyboard() })
   })
   bot.callbackQuery(/^lang:/, async ctx => {
     const lang = normalizeLang(ctx.callbackQuery.data.slice('lang:'.length))
@@ -1130,8 +1119,7 @@ if (channelMode.poll) {
     }
     const text = translate(lang, 'languageSet', { name: LANGUAGES[lang] })
     await ctx.answerCallbackQuery({ text: LANGUAGES[lang] }).catch(() => {})
-    const msgId = ctx.callbackQuery.message?.message_id
-    if (msgId != null) await editRich(chatOf(ctx), msgId, text)
+    await ctx.editMessageText(text).catch(() => {})
     registerCommands()
   })
 
@@ -1140,7 +1128,7 @@ if (channelMode.poll) {
     const gated = dmCommandGate(ctx)
     if (!gated) return
     if (!gated.access.allowFrom.includes(gated.senderId)) {
-      await sayRich(chatOf(ctx), t('notPaired'))
+      await ctx.reply(t('notPaired'))
       return
     }
     let claudeVersion: string | undefined
@@ -1155,7 +1143,7 @@ if (channelMode.poll) {
     const gated = dmCommandGate(ctx)
     if (!gated) return
     if (!gated.access.allowFrom.includes(gated.senderId)) {
-      await sayRich(chatOf(ctx), t('notPaired'))
+      await ctx.reply(t('notPaired'))
       return
     }
     await sayRich(chatOf(ctx), sessionReport())
@@ -1168,7 +1156,7 @@ if (COMMAND_HELPER && channelMode.poll) {
       const gated = dmCommandGate(ctx)
       if (!gated) return
       if (!gated.access.allowFrom.includes(gated.senderId)) {
-        await sayRich(chatOf(ctx), t('notPaired'))
+        await ctx.reply(t('notPaired'))
         return
       }
       const arg = String(ctx.match ?? '').trim()
@@ -1179,7 +1167,7 @@ if (COMMAND_HELPER && channelMode.poll) {
       const chatId = String(ctx.chat!.id)
       noteStatusChat(chatId)
       if (!arg && PICKERS[command]) {
-        await sayRich(chatId, t(PICKERS[command]!.prompt), pickerKeyboard(command))
+        await ctx.reply(t(PICKERS[command]!.prompt), { reply_markup: pickerKeyboard(command) })
         return
       }
       runHelper(command, arg, chatId)
@@ -1213,8 +1201,7 @@ if (COMMAND_HELPER && channelMode.poll) {
     }
     const [, command, option] = m
     await ctx.answerCallbackQuery({ text: `/${command} ${option}` }).catch(() => {})
-    const msgId = ctx.callbackQuery.message?.message_id
-    if (msgId != null) await editRich(chatId, msgId, t('pickApplying', { command, option }))
+    await ctx.editMessageText(t('pickApplying', { command, option })).catch(() => {})
     noteStatusChat(chatId)
     runHelper(command!, option!, chatId)
   })
@@ -1457,7 +1444,7 @@ async function handleInbound(
   if (result.action === 'drop') return
 
   if (result.action === 'pair') {
-    await sayRich(chatOf(ctx), t(result.isResend ? 'pairStillPending' : 'pairRequired', { code: result.code }))
+    await ctx.reply(t(result.isResend ? 'pairStillPending' : 'pairRequired', { code: result.code }))
     return
   }
 

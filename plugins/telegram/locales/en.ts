@@ -6,18 +6,18 @@
 export const en = {
   // Common
   notAuthorized: 'Not authorized.',
-  notPaired: '🔒 **Not paired yet.** Send me any message to get a pairing code.',
+  notPaired: '🔒 Not paired yet. Send me any message to get a pairing code.',
   cancelButton: '✖ Cancel',
   cancelledToast: 'Cancelled',
   cancelledMessage: '✖ Cancelled',
 
   // Pairing and /start, /status
-  start: '## 🤖 Claude Code on Telegram\nThis bot connects Telegram to a Claude Code session on your server.\n\n### 🔗 Pairing\n1. Send me any message: you get a 6-character code\n2. Run it in Claude Code: `/telegram:access pair <code>`\n\nAfter that, your messages here reach the session. Send /help to see what it can do.',
-  pairRequired: '### 🔗 Pairing required\nRun this in Claude Code:\n```\n/telegram:access pair {code}\n```',
-  pairStillPending: '### ⏳ Still waiting for approval\nRun this in Claude Code:\n```\n/telegram:access pair {code}\n```',
-  pairApproved: '### ✅ Paired\nSay hi to Claude. Send /help to see what it can do.',
-  statusPaired: '✅ **Paired** as {name}\n\n/help what it can do · /doctor health check',
-  statusPending: '### ⏳ Waiting for approval\nRun this in Claude Code:\n```\n/telegram:access pair {code}\n```',
+  start: '## 🤖 Claude Code on Telegram\n\nThis bot connects Telegram to a Claude Code session on your server.\n\n### 🔗 Pairing\n\n1. Send me any message: you get a 6-character code\n\n2. Run it in Claude Code: `/telegram:access pair <code>`\n\nAfter that, your messages here reach the session. Send /help to see what it can do.',
+  pairRequired: '🔗 Pairing required. Run this in Claude Code:\n\n/telegram:access pair {code}',
+  pairStillPending: '⏳ Still waiting for approval. Run this in Claude Code:\n\n/telegram:access pair {code}',
+  pairApproved: '✅ Paired! Say hi to Claude. Send /help to see what it can do.',
+  statusPaired: '✅ Paired as {name}.',
+  statusPending: '⏳ Waiting for approval. Run this in Claude Code:\n\n/telegram:access pair {code}',
 
   // Command menu
   cmdStart: 'Welcome and setup guide',
@@ -32,8 +32,8 @@ export const en = {
   cmdEffort: 'Set reasoning effort, e.g. /effort high',
 
   // /language
-  languageChoose: '### 🌐 Language\nPick the language of the bot’s own messages (menus, status, buttons). Claude answers in whatever language you write.',
-  languageSet: '✅ Language: **{name}**',
+  languageChoose: '🌐 Pick the language of the bot’s own messages (menus, status, buttons). Claude answers in whatever language you write.',
+  languageSet: '✅ Language: {name}',
 
   // /help
   helpTitle: '## 🤖 Claude Code on Telegram',
@@ -77,12 +77,12 @@ export const en = {
   shortcutTooOld: 'This message is too old for shortcuts.',
 
   // /model, /effort and the command helper
-  pickModel: '### 🧠 Model\nPick one. `default` uses your account’s default.',
-  pickEffort: '### 💭 Reasoning effort\nHigher thinks longer and uses more quota.',
-  pickApplying: '⏳ **/{command} {option}** · applying when the session is idle…',
+  pickModel: '🧠 Pick a model (default = your account’s default):',
+  pickEffort: '💭 Pick reasoning effort (higher thinks longer and uses more quota):',
+  pickApplying: '⏳ /{command} {option}: applying when the session is idle…',
   helperBadArg: 'Invalid argument for /{command}: use letters, digits and . _ : - only.',
   helperFailed: '/{command} failed: {error}',
-  helperNew: '### 🆕 New conversation\nThe previous context was cleared. Memory files and project rules still apply.',
+  helperNew: '🆕 Started a new conversation. The previous context was cleared; memory files and project rules still apply.',
   helperUsageTitle: '📊 Claude usage',
   helperUsageNoPct: 'percentage not found',
   usageSession: 'Current session (5-hour limit)',
@@ -92,11 +92,11 @@ export const en = {
   usageResetsRaw: '⏱ Resets {when}',
   helperUsageFailed: '⚠️ Could not read the usage panel. Try again in a moment.',
   helperNoResult: '⚠️ Typed {cmd} but could not read the result. Try again in a moment.',
-  helperModelSwitched: '✅ Model: **{model}** (saved as default)',
-  helperModelUnchanged: 'ℹ️ Model unchanged: **{model}**',
-  helperModelUnknown: '⚠️ Unknown model: **{model}**\nOptions: {options}',
-  helperEffortSet: '✅ Reasoning effort: **{effort}** (saved as default)',
-  helperEffortAuto: '✅ Reasoning effort: **auto**',
+  helperModelSwitched: '✅ Model: {model} (saved as default)',
+  helperModelUnchanged: 'ℹ️ Model unchanged: {model}',
+  helperModelUnknown: '⚠️ Unknown model: {model}\nOptions: {options}',
+  helperEffortSet: '✅ Reasoning effort: {effort} (saved as default)',
+  helperEffortAuto: '✅ Reasoning effort: auto',
   helperEffortInvalid: '⚠️ Invalid level. Options: {options}',
   helperSlowerNext: 'The new model re-reads the conversation, so the next reply may be slower.',
   helperBusy: '⚠️ The session stayed busy, so /{command} was not run. Try again later.',

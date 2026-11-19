@@ -162,10 +162,13 @@ export function plainMarkdown(md: string): string {
 }
 
 /**
- * Join lines so each shows on its own line in a rich message: lines next
- * to each other get a Markdown hard break (two trailing spaces), and an
- * empty string starts a new paragraph.
+ * Spaced layout for longer rich messages: every item is its own
+ * paragraph (a blank line between them). An item may hold several lines,
+ * which stay together with hard breaks.
  */
-export function mdLines(lines: string[]): string {
-  return lines.join('\n').replace(/([^\n])\n(?=[^\n])/g, '$1  \n')
+export function mdSpaced(items: string[]): string {
+  return items
+    .filter(x => x !== '')
+    .map(x => x.replace(/([^\n])\n(?=[^\n])/g, '$1  \n'))
+    .join('\n\n')
 }

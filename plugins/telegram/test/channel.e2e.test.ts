@@ -240,11 +240,12 @@ describe('/language', () => {
     await boot(allowlist)
     command(OWNER, '/language')
     const picker = await tg.waitFor(c => said(c, /Pick the language/), 'language picker')
+    expect(picker.method).toBe('sendMessage')
     const buttons = picker.body.reply_markup.inline_keyboard.flat().map((b: any) => b.callback_data)
     expect(buttons).toEqual(['lang:en', 'lang:zh'])
 
     tg.press(OWNER, 'lang:zh', picker.result.message_id, textOf(picker))
-    await tg.waitFor(c => c.method === 'editMessageText' && /语言：\*\*中文/.test(textOf(c)), 'confirmation in Chinese')
+    await tg.waitFor(c => c.method === 'editMessageText' && /语言：中文/.test(textOf(c)), 'confirmation in Chinese')
     expect(readFileSync(join(ch.stateDir, 'language'), 'utf8')).toBe('zh\n')
     const menu = await tg.waitFor(
       c => c.method === 'setMyCommands' && JSON.stringify(c.body.commands).includes('检查一切是否正常'),
@@ -285,15 +286,20 @@ describe('command answers', () => {
     expect(textOf(rich)).toContain('### 🔗 Pairing')
 
     tg.failNext('sendRichMessage', { error_code: 400, description: 'Bad Request: rich messages are not supported' })
+    command(OWNER, '/start')
+    const plain = await tg.waitFor(c => c.method === 'sendMessage' && /Pairing/.test(textOf(c)), 'plain /start')
+    expect(textOf(plain)).not.toMatch(/\*\*|###|`/)
+
+    // Short answers are plain text to begin with.
     command(OWNER, '/status')
-    const plain = await tg.waitFor(c => c.method === 'sendMessage' && /Paired/.test(textOf(c)), 'plain /status')
-    expect(textOf(plain)).not.toContain('**')
+    const status = await tg.waitFor(c => said(c, /Paired as/), '/status')
+    expect(status.method).toBe('sendMessage')
   })
 
-  test('a pairing code comes in a code block to copy', async () => {
-    await boot({ dmPolicy: 'pairing', allowFrom: [], groups: {}, pending: {} })
-    tg.dm(STRANGER, 'hi')
-    const msg = await tg.waitFor(c => said(c, /telegram:access pair/), 'pairing code')
-    expect(textOf(msg)).toMatch(/```\n\/telegram:access pair [a-f0-9]{6}\n```/)
+  test('long answers are spaced out', async () => {
+    await boot(allowlist)
+    command(OWNER, '/doctor')
+    const msg = await tg.waitFor(c => said(c, /Doctor/), '/doctor')
+    expect(textOf(msg)).toMatch(/- ✅ [^\n]+\n\n- ✅ /)
   })
 })

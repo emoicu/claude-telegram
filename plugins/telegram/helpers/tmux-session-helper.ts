@@ -133,7 +133,7 @@ async function jobNew(pane: string): Promise<void> {
   await typeCommand(pane, '/clear')
   await sleep(3000)
   log('new: typed /clear')
-  await sendRich(t('helperNew'))
+  await send(t('helperNew'))
 }
 
 async function jobUsage(pane: string): Promise<void> {
@@ -231,7 +231,7 @@ async function jobSlash(pane: string, cmd: string): Promise<void> {
   let msg = described.text
   if (confirmed && described.switched) msg += `\n\n${t('helperSlowerNext')}`
   log(`slash: ${cmd} -> ${msg.split('\n')[0]}`)
-  await sendRich(msg)
+  await send(msg, { remove_keyboard: true })
 }
 
 // ---- entry -----------------------------------------------------------------

@@ -2,7 +2,7 @@
 // it into a chat message with bars and reset times in the reader's own
 // time zone. Pure functions; helpers/tmux-session-helper.ts does the I/O.
 
-import { mdLines } from './format.ts'
+import { mdSpaced } from './format.ts'
 import { type T, tEn } from './i18n.ts'
 
 export type UsageItem = { title: string; pct?: number; reset?: string }
@@ -85,7 +85,7 @@ export function formatUsage(panel: { items: UsageItem[]; lines: string[] }, now:
     if (it.pct == null) {
       out.push(`**${title(it.title, t)}** · ${t('helperUsageNoPct')}`)
     } else {
-      out.push(`**${title(it.title, t)}** ${level(it.pct)} ${it.pct}%`, `\`${usageBar(it.pct)}\``)
+      out.push(`**${title(it.title, t)}** ${level(it.pct)} ${it.pct}%\n\`${usageBar(it.pct)}\``)
     }
     if (it.reset) {
       const at = parseReset(it.reset, now)
@@ -97,5 +97,5 @@ export function formatUsage(panel: { items: UsageItem[]; lines: string[] }, now:
       )
     }
   }
-  return mdLines(out)
+  return mdSpaced(out)
 }

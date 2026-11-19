@@ -6,18 +6,18 @@ import type { Messages } from './en.ts'
 export const zh: Messages = {
   // Common
   notAuthorized: '你没有权限。',
-  notPaired: '🔒 **还没配对。** 给我发任意一条消息就能拿到配对码。',
+  notPaired: '🔒 还没配对。给我发任意一条消息就能拿到配对码。',
   cancelButton: '✖ 取消',
   cancelledToast: '已取消',
   cancelledMessage: '✖ 已取消',
 
   // Pairing and /start, /status
-  start: '## 🤖 Telegram 上的 Claude Code\n这个机器人把 Telegram 接到你服务器上的一个 Claude Code 会话。\n\n### 🔗 配对\n1. 给我发任意一条消息，拿到 6 位配对码\n2. 在 Claude Code 里运行：`/telegram:access pair <配对码>`\n\n之后你在这里发的消息就会到达那个会话。发 /help 看它能做什么。',
-  pairRequired: '### 🔗 需要先配对\n在 Claude Code 里运行：\n```\n/telegram:access pair {code}\n```',
-  pairStillPending: '### ⏳ 仍在等待批准\n在 Claude Code 里运行：\n```\n/telegram:access pair {code}\n```',
-  pairApproved: '### ✅ 配对成功\n跟 Claude 打个招呼吧。发 /help 看它能做什么。',
-  statusPaired: '✅ **已配对**：{name}\n\n/help 能做什么 · /doctor 自检',
-  statusPending: '### ⏳ 等待批准\n在 Claude Code 里运行：\n```\n/telegram:access pair {code}\n```',
+  start: '## 🤖 Telegram 上的 Claude Code\n\n这个机器人把 Telegram 接到你服务器上的一个 Claude Code 会话。\n\n### 🔗 配对\n\n1. 给我发任意一条消息，拿到 6 位配对码\n\n2. 在 Claude Code 里运行：`/telegram:access pair <配对码>`\n\n之后你在这里发的消息就会到达那个会话。发 /help 看它能做什么。',
+  pairRequired: '🔗 需要先配对。请在 Claude Code 里运行：\n\n/telegram:access pair {code}',
+  pairStillPending: '⏳ 仍在等待批准。请在 Claude Code 里运行：\n\n/telegram:access pair {code}',
+  pairApproved: '✅ 配对成功！跟 Claude 打个招呼吧。发 /help 看它能做什么。',
+  statusPaired: '✅ 已配对：{name}',
+  statusPending: '⏳ 等待批准。请在 Claude Code 里运行：\n\n/telegram:access pair {code}',
 
   // Command menu
   cmdStart: '欢迎和设置指南',
@@ -32,8 +32,8 @@ export const zh: Messages = {
   cmdEffort: '设置思考强度，例如 /effort high',
 
   // /language
-  languageChoose: '### 🌐 语言\n选择机器人自身消息（菜单、状态、按钮）的语言。Claude 本身会用你发消息时的语言回答。',
-  languageSet: '✅ 语言：**{name}**',
+  languageChoose: '🌐 选择机器人自身消息（菜单、状态、按钮）的语言。Claude 本身会用你发消息时的语言回答。',
+  languageSet: '✅ 语言：{name}',
 
   // /help
   helpTitle: '## 🤖 Telegram 上的 Claude Code',
@@ -77,12 +77,12 @@ export const zh: Messages = {
   shortcutTooOld: '这条消息太旧了，快捷指令用不了。',
 
   // /model, /effort and the command helper
-  pickModel: '### 🧠 模型\n选一个。`default` 是账号默认模型。',
-  pickEffort: '### 💭 思考强度\n越高想得越久，也越耗额度。',
-  pickApplying: '⏳ **/{command} {option}** · 等会话空闲后生效…',
+  pickModel: '🧠 选择模型（default = 账号默认）：',
+  pickEffort: '💭 选择思考强度（越高想得越久，也越耗额度）：',
+  pickApplying: '⏳ /{command} {option}：等会话空闲后生效…',
   helperBadArg: '/{command} 的参数无效：只能用字母、数字和 . _ : -。',
   helperFailed: '/{command} 失败：{error}',
-  helperNew: '### 🆕 新对话\n之前的上下文已清空。记忆文件和项目规则照常生效。',
+  helperNew: '🆕 已开始新对话。之前的上下文已清空，记忆文件和项目规则照常生效。',
   helperUsageTitle: '📊 Claude 用量',
   helperUsageNoPct: '没找到百分比',
   usageSession: '当前会话（5 小时额度）',
@@ -92,11 +92,11 @@ export const zh: Messages = {
   usageResetsRaw: '⏱ {when} 重置',
   helperUsageFailed: '⚠️ 读不到用量面板，请稍后再试。',
   helperNoResult: '⚠️ 已输入 {cmd}，但读不到结果，请稍后再试。',
-  helperModelSwitched: '✅ 模型：**{model}**（已存为默认）',
-  helperModelUnchanged: 'ℹ️ 模型没变：**{model}**',
-  helperModelUnknown: '⚠️ 未知模型：**{model}**\n可选：{options}',
-  helperEffortSet: '✅ 思考强度：**{effort}**（已存为默认）',
-  helperEffortAuto: '✅ 思考强度：**auto**',
+  helperModelSwitched: '✅ 模型：{model}（已存为默认）',
+  helperModelUnchanged: 'ℹ️ 模型没变：{model}',
+  helperModelUnknown: '⚠️ 未知模型：{model}\n可选：{options}',
+  helperEffortSet: '✅ 思考强度：{effort}（已存为默认）',
+  helperEffortAuto: '✅ 思考强度：auto',
   helperEffortInvalid: '⚠️ 级别无效。可选：{options}',
   helperSlowerNext: '新模型要重新读一遍对话，所以下一条回复可能会慢一些。',
   helperBusy: '⚠️ 会话一直在忙，/{command} 没有执行，请稍后再试。',

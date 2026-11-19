@@ -24,7 +24,9 @@ import { spawn, execFileSync } from 'node:child_process'
 import { appendFileSync, readFileSync, openSync, closeSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { expandTimes } from '../lib/format.ts'
 import { translator } from '../lib/i18n.ts'
+import { formatUsage, parseUsagePanel, plainUsage } from '../lib/usage.ts'
 
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels', 'telegram')
@@ -49,8 +51,8 @@ function log(msg: string): void {
   } catch {}
 }
 
-async function tg(method: string, body: Record<string, unknown>): Promise<void> {
-  if (!TOKEN || !CHAT) return
+async function tg(method: string, body: Record<string, unknown>): Promise<boolean> {
+  if (!TOKEN || !CHAT) return false
   try {
     const res = await fetch(`${API_ROOT}/bot${TOKEN}/${method}`, {
       method: 'POST',
@@ -64,13 +66,21 @@ async function tg(method: string, body: Record<string, unknown>): Promise<void> 
       signal: AbortSignal.timeout(20_000),
     })
     if (!res.ok) log(`${method} failed: HTTP ${res.status}`)
+    return res.ok
   } catch (err) {
     log(`${method} failed: ${err instanceof Error ? err.name : 'error'}`)
+    return false
   }
 }
 
 const send = (text: string, reply_markup?: unknown) =>
   tg('sendMessage', reply_markup ? { text, reply_markup } : { text })
+
+/** A rich Markdown message (Bot API 10.1), plain text if Telegram rejects it. */
+async function sendRich(markdown: string): Promise<void> {
+  if (await tg('sendRichMessage', { rich_message: { markdown: expandTimes(markdown, 'rich') } })) return
+  await send(plainUsage(expandTimes(markdown, 'text')))
+}
 
 // ---- Claude session and tmux --------------------------------------------
 
@@ -125,32 +135,6 @@ async function jobNew(pane: string): Promise<void> {
   await send(t('helperNew'))
 }
 
-function parseUsage(screen: string): string | undefined {
-  const lines: string[] = []
-  let grab = false
-  for (const raw of screen.split('\n')) {
-    const s = raw.trim()
-    if (s.startsWith('Current session')) grab = true
-    if (s.startsWith('What') && s.includes('contributing')) break
-    if (!grab) continue
-    const clean = s.replace(/[▀-▟■-◿]+/g, ' ').replace(/\s{2,}/g, ' ').trim()
-    if (clean) lines.push(clean)
-  }
-  if (!lines.length) return undefined
-
-  const items: { title: string; pct?: string; reset?: string }[] = []
-  for (const s of lines) {
-    if (s.startsWith('Current ')) items.push({ title: s })
-    else if (items.length && /\d+% used/.test(s)) items[items.length - 1].pct = /(\d+)% used/.exec(s)![1]
-    else if (items.length && s.startsWith('Resets')) items[items.length - 1].reset = s.slice('Resets'.length).trim()
-  }
-  if (!items.length) return [t('helperUsageTitle'), ...lines].join('\n')
-  return [
-    t('helperUsageTitle'),
-    ...items.map(it => `${it.title}: ${it.pct ? t('helperUsageUsed', { pct: it.pct }) : t('helperUsageNoPct')}${it.reset ? t('helperUsageResets', { when: it.reset }) : ''}`),
-  ].join('\n')
-}
-
 async function jobUsage(pane: string): Promise<void> {
   let text: string | undefined
   for (let attempt = 0; attempt < 2 && !text; attempt++) {
@@ -175,10 +159,12 @@ async function jobUsage(pane: string): Promise<void> {
         tmux('set-option', '-w', '-u', '-t', pane, 'window-size')
       } catch {}
     }
-    text = parseUsage(screen)
+    const panel = parseUsagePanel(screen)
+    text = panel && formatUsage(panel, Date.now(), t)
   }
   log(`usage: ${text ? 'read panel' : 'panel not found'}`)
-  await send(text ?? t('helperUsageFailed'))
+  if (text) await sendRich(text)
+  else await send(t('helperUsageFailed'))
 }
 
 /** Text Claude Code printed below the last `❯ <cmd>` echo, if it is new. */

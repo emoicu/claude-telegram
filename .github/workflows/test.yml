@@ -16,6 +16,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Dependency audit
         run: bun audit --production --audit-level=moderate
+      - name: Shell scripts
+        run: for f in ../../scripts/*.sh; do bash -n "$f"; done
       - name: Type check
         run: bun run typecheck
       - name: Lint

@@ -5,7 +5,7 @@
 **Drive Claude Code from Telegram: chat with your sessions, watch them work, and steer them from your phone.**
 
 [![test](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml)
-[![version](https://img.shields.io/badge/version-0.0.7--emoicu.49-blue)](plugins/telegram/.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-1.0.0-blue)](plugins/telegram/.claude-plugin/plugin.json)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-channel%20plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
@@ -56,6 +56,14 @@ A personally maintained fork of the official [Claude Code Telegram channel plugi
 
 **1. Create a bot.** Message [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the token it gives you.
 
+**Shortcut:** steps 2–4 in one go, on Linux or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/emoicu/claude-telegram/main/scripts/install.sh | bash
+```
+
+It installs the plugin, checks the token with Telegram and saves it (mode 600), and adds a `claude-telegram` launcher. Read [the script](scripts/install.sh) first if you like; it is short.
+
 **2. Install the plugin** (inside a `claude` session):
 
 ```
@@ -83,7 +91,7 @@ claude --dangerously-load-development-channels plugin:telegram@emoicu-plugins
 /telegram:access policy allowlist
 ```
 
-That's it: your next message reaches Claude. For groups and multi-user setups, see [ACCESS.md](plugins/telegram/ACCESS.md).
+That's it: your next message reaches Claude. Send `/doctor` to the bot to check the setup. For groups and multi-user setups, see [ACCESS.md](plugins/telegram/ACCESS.md); if something does not work, [troubleshooting](docs/troubleshooting.md).
 
 ## Usage
 
@@ -164,7 +172,9 @@ Telegram ──long polling──▶ router.ts ──unix socket──▶ server
    └──────── Bot API ◀─────────┴──────────────────────────┘
 ```
 
-Without the router, `server.ts` polls Telegram itself for a single session. With it, the router is the only poller and hands each update to the session that owns the chat or topic. Replies always go straight to the Bot API.
+Without the router, `server.ts` polls Telegram itself for a single session. With it, the router is the only poller and hands each update to the session that owns the chat or topic. Replies always go straight to the Bot API. More in [docs/architecture.md](docs/architecture.md); who can reach Claude and what is stored where in [SECURITY.md](SECURITY.md).
+
+Releases and what changed in each: [CHANGELOG.md](CHANGELOG.md).
 
 ## Development
 

@@ -20,7 +20,7 @@ import type { ReactionTypeEmoji } from 'grammy/types'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, openSync, readSync, closeSync, fstatSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { execFile, execFileSync } from 'node:child_process'
-import { join, extname } from 'node:path'
+import { dirname, join, extname } from 'node:path'
 import {
   chunk, clip, expandTimes, fmtDuration, fmtTokens, renderChecklist, renderDraft, renderStatus, safeName,
   type Step,
@@ -38,6 +38,7 @@ import {API_ROOT, channelMode, ENV_FILE, ignored, INBOX_DIR, log, PID_FILE, ROUT
   STATE_DIR, TOKEN, TOPIC_CHAT, TOPIC_THREAD,
 } from './core/config.ts'
 import { startInboxPruning } from './core/inbox.ts'
+import { activityFile, readActivity, stopFlagFile } from './lib/activity.ts'
 import { handlePermissionButtons, relayPermissionRequests } from './core/permissions.ts'
 import {
   assertAllowedChat, assertSendable, dmCommandGate, gate as gateWith, loadAccess, startApprovalPolling,
@@ -1451,10 +1452,14 @@ async function handleInbound(
 // in place with elapsed time, the current step and a step count (deleted
 // when the turn ends). Busy/idle
 // comes from ~/.claude/sessions/<claude pid>.json; steps come from tool_use
-// entries in the session transcript. TELEGRAM_STATUS=off disables it.
+// entries in the session transcript. Both are internal to Claude Code, so
+// hooks/activity-telegram.ts also reports the turn through documented hooks
+// (lib/activity.ts): its steps are preferred, and it decides busy/idle when
+// the session file cannot be read. TELEGRAM_STATUS=off disables it.
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-const STATUS_ENABLED =
-  channelMode.poll && channelMode.claudePid != null && process.env.TELEGRAM_STATUS !== 'off'
+const STATUS_ENABLED = channelMode.poll && process.env.TELEGRAM_STATUS !== 'off'
+const ACTIVITY_FILE = activityFile(STATE_DIR, SLOT)
+const STOP_FLAG = stopFlagFile(STATE_DIR, SLOT)
 const STATUS_POLL_MS = 2000
 // Short turns get typing (and the reaction status) only, no status line.
 // With reaction status on, the line waits longer: the reaction already
@@ -1513,7 +1518,8 @@ function noteStatusReply(chat_id: string): void {
   if (work && work.chat === chat_id && work.msgId != null) work.replyAt = Date.now()
 }
 
-function readClaudeSession(): { status?: string; sessionId?: string } | undefined {
+function readClaudeSession(): { status?: string; sessionId?: string; tmux?: string } | undefined {
+  if (channelMode.claudePid == null) return undefined
   try {
     return JSON.parse(readFileSync(join(CLAUDE_DIR, 'sessions', `${channelMode.claudePid}.json`), 'utf8'))
   } catch {
@@ -1575,23 +1581,33 @@ const isPrivateChat = (chat: string) => !chat.startsWith('-')
  * Interrupt the owning Claude session by pressing Escape in its tmux pane,
  * as a user at the terminal would. Returns why it could not, if it could not.
  */
-function interruptClaude(): string | undefined {
-  let pane: string | undefined
-  try {
-    const info = JSON.parse(readFileSync(join(CLAUDE_DIR, 'sessions', `${channelMode.claudePid}.json`), 'utf8'))
-    if (info.status !== 'busy') return 'Claude is not working on anything right now.'
-    pane = /(%\d+)$/.exec(String(info.tmux ?? ''))?.[1]
-  } catch (err) {
-    ignored('read Claude session info', err)
+function interruptClaude(): { stopped: boolean; text: string } {
+  const session = readClaudeSession()
+  const busy = session?.status != null ? session.status === 'busy' : !!readActivity(ACTIVITY_FILE, Date.now())?.busy
+  if (!busy) return { stopped: false, text: 'Claude is not working on anything right now.' }
+  const pane = /(%\d+)$/.exec(String(session?.tmux ?? ''))?.[1]
+  let problem = 'this Claude session is not running inside tmux'
+  if (pane) {
+    try {
+      execFileSync('tmux', ['send-keys', '-t', pane, 'Escape'], { stdio: 'ignore' })
+      if (work) work.stopped = true
+      return { stopped: true, text: 'Stopping…' }
+    } catch (err) {
+      problem = err instanceof Error ? err.message : String(err)
+    }
   }
-  if (!pane) return 'Cannot stop: this Claude session is not running inside tmux.'
+  // No Escape key to send: the activity hook ends the turn at the next tool
+  // call instead. Only used then, so an interrupted turn never leaves a flag
+  // behind for the next one.
   try {
-    execFileSync('tmux', ['send-keys', '-t', pane, 'Escape'], { stdio: 'ignore' })
+    mkdirSync(dirname(STOP_FLAG), { recursive: true, mode: 0o700 })
+    writeFileSync(STOP_FLAG, String(Date.now()), { mode: 0o600 })
+    if (work) work.stopped = true
+    return { stopped: true, text: 'Stopping at the next step…' }
   } catch (err) {
-    return `Cannot stop: ${err instanceof Error ? err.message : err}`
+    ignored('write stop flag', err)
   }
-  if (work) work.stopped = true
-  return undefined
+  return { stopped: false, text: `Cannot stop: ${problem}.` }
 }
 
 // The status message is scaffolding: once the turn ends it is deleted so the
@@ -1639,6 +1655,8 @@ function startAcks(w: Work): void {
 }
 
 async function finishWork(w: Work): Promise<void> {
+  // A Stop that came after the last tool call must not stop the next turn.
+  rmSync(STOP_FLAG, { force: true })
   for (const a of w.acks) setReaction(a, w.stopped ? undefined : '👍')
   if (w.msgId == null) return
   await bot.api.deleteMessage(w.chat, w.msgId).catch(() => {})
@@ -1647,7 +1665,10 @@ async function finishWork(w: Work): Promise<void> {
 async function statusTick(): Promise<void> {
   const now = Date.now()
   const session = readClaudeSession()
-  const busy = session?.status === 'busy'
+  const activity = readActivity(ACTIVITY_FILE, now)
+  // Claude Code's session file is the most direct signal; the hooks decide
+  // when it cannot be read (not found, or its format changed).
+  const busy = session?.status != null ? session.status === 'busy' : !!activity?.busy
 
   if (!busy) {
     if (work && ++work.idleTicks >= STATUS_IDLE_TICKS) {
@@ -1684,6 +1705,11 @@ async function statusTick(): Promise<void> {
 
   const path = session?.sessionId ? findTranscript(session.sessionId) : undefined
   if (path) scanSteps(w, path)
+  // Steps reported by the hooks for this turn win over the transcript scan.
+  if (activity?.since != null && activity.since >= w.start - STATUS_POLL_MS * 2) {
+    w.steps = activity.steps
+    if (activity.current) w.current = activity.current
+  }
 
   if (useDraft) {
     if (w.stopped || now - w.start < DRAFT_SHOW_AFTER_MS || now - w.lastEdit < DRAFT_EVERY_MS) return
@@ -1810,9 +1836,9 @@ bot.callbackQuery('stop:run', async ctx => {
     await ctx.answerCallbackQuery({ text: 'Not authorized.' }).catch(() => {})
     return
   }
-  const problem = interruptClaude()
-  await ctx.answerCallbackQuery({ text: problem ?? 'Stopping…' }).catch(() => {})
-  if (!problem) await ctx.editMessageText('⏹ Stopped by you.').catch(() => {})
+  const r = interruptClaude()
+  await ctx.answerCallbackQuery({ text: r.text }).catch(() => {})
+  if (r.stopped) await ctx.editMessageText('⏹ Stopped by you.').catch(() => {})
 })
 
 // LOCAL PATCH: the stop button Telegram shows on a draft (can_stop) arrives
@@ -1824,8 +1850,8 @@ bot.use(async (ctx, next) => {
   if (!stop) return next()
   const chat = String(stop.chat?.id ?? '')
   if (stop.chat?.type !== 'private' || !loadAccess().allowFrom.includes(chat)) return
-  const problem = interruptClaude()
-  await bot.api.sendMessage(chat, problem ?? '⏹ Stopped.', { disable_notification: true }).catch(() => {})
+  const r = interruptClaude()
+  await bot.api.sendMessage(chat, r.stopped ? `⏹ ${r.text}` : r.text, { disable_notification: true }).catch(() => {})
 })
 
 // LOCAL PATCH: answer button presses nobody handled, so the client stops

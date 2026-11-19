@@ -37,6 +37,7 @@ import { cpus, homedir, loadavg } from 'node:os'
 import { basename, join } from 'node:path'
 import type { Socket } from 'bun'
 import { createLogger, parseLevel } from './lib/log.ts'
+import { deliverDue, scheduleDir, scheduledSender } from './lib/schedule.ts'
 import { isNewer } from './lib/version.ts'
 
 // ---- config ---------------------------------------------------------------
@@ -982,6 +983,29 @@ async function handleWithRevive(u: any): Promise<void> {
 log(`router up: tmux session ${TMUX_SESSION}, ${slots.size} slot(s), idle stop ${IDLE_MS / 60_000} min`)
 setInterval(() => void tick().catch(err => log(`tick failed: ${err}`)), TICK_MS)
 void tick()
+
+// Scheduled messages (the schedule tool): the router is the one process that
+// is always up, so it sends them, whether or not their session still runs.
+const SCHEDULE_EVERY_MS = 15_000
+const sendScheduled = scheduledSender(api)
+let scheduling = false
+setInterval(() => {
+  if (scheduling) return
+  scheduling = true
+  const access = loadAccess()
+  void deliverDue(
+    scheduleDir(STATE_DIR),
+    Date.now(),
+    sendScheduled,
+    chat => access.allowFrom.includes(chat) || chat in access.groups,
+    (what, err) => (err === undefined ? logger.warn(what) : logger.warn(what, err)),
+  )
+    .then(n => n && log(`sent ${n} scheduled message(s)`))
+    .catch(err => logger.warn('scheduled delivery', err))
+    .finally(() => {
+      scheduling = false
+    })
+}, SCHEDULE_EVERY_MS)
 
 process.on('SIGTERM', () => process.exit(0))
 process.on('SIGINT', () => process.exit(0))

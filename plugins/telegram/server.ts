@@ -29,6 +29,10 @@ import {
 } from './lib/format.ts'
 import { createLogger, parseLevel } from './lib/log.ts'
 import { scanTranscriptTail } from './lib/transcript.ts'
+import {
+  cancelScheduled, deliverDue, describeScheduled, listScheduled, MAX_PER_CHAT, MAX_TEXT, newId, parseWhen, type Repeat,
+  saveScheduled, scheduleDir, scheduledSender,
+} from './lib/schedule.ts'
 import { addRemembered, findPending, loadList, type PendingPrompt, pendingFile, promptLabel, type Remembered, rememberedFile, saveList } from './lib/remember.ts'
 import { bare, mergeShortcuts, PAUSE_REACTION, QUICK_FIRST, type Shortcut } from './lib/shortcuts.ts'
 import {
@@ -386,6 +390,25 @@ function checkApprovals(): void {
 
 if (!STATIC) setInterval(checkApprovals, 5000).unref()
 
+// Scheduled messages (the schedule tool) in single mode: the polling server
+// sends them. In router mode the router does, since sessions come and go.
+if (channelMode.poll && !routed) {
+  const sendScheduled = scheduledSender((method, body) => (bot.api.raw as any)[method](body))
+  let scheduling = false
+  setInterval(() => {
+    if (scheduling) return
+    scheduling = true
+    const access = loadAccess()
+    void deliverDue(scheduleDir(STATE_DIR), Date.now(), sendScheduled, chat => isAllowedChat(access, chat), (what, err) =>
+      err === undefined ? log.warn(what) : log.warn(what, err),
+    )
+      .catch(err => log.warn('scheduled delivery', err))
+      .finally(() => {
+        scheduling = false
+      })
+  }, 15_000).unref()
+}
+
 // Telegram caps messages at 4096 chars. Split long replies, preferring
 // paragraph boundaries when chunkMode is 'newline'.
 
@@ -577,6 +600,37 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           new: { type: 'boolean', description: 'Start a new checklist message even if the current one is unfinished.' },
         },
         required: ['chat_id', 'steps'],
+      },
+    },
+    {
+      name: 'schedule',
+      description:
+        'Schedule a message to the chat for later: reminders ("remind me at 8 tomorrow to renew the VPS"), or a daily / weekly note. The plugin sends it on time by itself, even if this session has stopped; it costs no Claude usage and Claude is not woken when it is sent. Text is GitHub-flavored Markdown like rich replies, {{time:…}} tokens work. Write the reminder itself, e.g. "⏰ Renew the VPS".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string' },
+          text: { type: 'string', description: `The message, at most ${MAX_TEXT} characters.` },
+          at: {
+            type: 'string',
+            description: "When to send: ISO-8601 with the user's zone (2026-11-20T08:00:00+08:00), Unix seconds, or now+30m / now+2h / now+1d. At most a year ahead.",
+          },
+          repeat: { type: 'string', enum: ['none', 'daily', 'weekly'], description: 'Send again every day or week at the same time. Default none.' },
+        },
+        required: ['chat_id', 'text', 'at'],
+      },
+    },
+    {
+      name: 'scheduled',
+      description: 'List the scheduled messages of a chat, or cancel one by id.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string' },
+          action: { type: 'string', enum: ['list', 'cancel'] },
+          id: { type: 'string', description: 'For cancel: the id from schedule or list.' },
+        },
+        required: ['chat_id', 'action'],
       },
     },
   ],
@@ -955,6 +1009,39 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }))
         const result = await showProgress(chat_id, args.title as string | undefined, steps, args.new === true)
         return { content: [{ type: 'text', text: result }] }
+      }
+      case 'schedule': {
+        const chat_id = args.chat_id as string
+        assertAllowedChat(chat_id)
+        const text = String(args.text ?? '').trim()
+        if (!text) throw new Error('text is empty')
+        if (text.length > MAX_TEXT) throw new Error(`text is longer than ${MAX_TEXT} characters`)
+        const now = Date.now()
+        const at = parseWhen(String(args.at ?? ''), now)
+        if (typeof at === 'string') throw new Error(at)
+        const dir = scheduleDir(STATE_DIR)
+        if (listScheduled(dir).filter(x => x.chat_id === chat_id).length >= MAX_PER_CHAT) {
+          throw new Error(`this chat already has ${MAX_PER_CHAT} scheduled messages; cancel some first`)
+        }
+        const repeat = args.repeat === 'daily' || args.repeat === 'weekly' ? (args.repeat as Repeat) : undefined
+        const thread = TOPIC_CHAT === chat_id ? TOPIC_THREAD : undefined
+        const item = { id: newId(), chat_id, ...(thread ? { thread } : {}), text, at, ...(repeat ? { repeat } : {}), created: now }
+        saveScheduled(dir, item)
+        log.info(`scheduled ${item.id} for ${new Date(at).toISOString()}${repeat ? ` (${repeat})` : ''}`)
+        return { content: [{ type: 'text', text: `scheduled (id: ${item.id}) for ${new Date(at).toISOString()}${repeat ? `, then ${repeat}` : ''}` }] }
+      }
+      case 'scheduled': {
+        const chat_id = args.chat_id as string
+        assertAllowedChat(chat_id)
+        const dir = scheduleDir(STATE_DIR)
+        if (args.action === 'cancel') {
+          const id = String(args.id ?? '')
+          const mine = listScheduled(dir).some(x => x.id === id && x.chat_id === chat_id)
+          if (!mine || !cancelScheduled(dir, id)) throw new Error(`no scheduled message ${id} in this chat`)
+          return { content: [{ type: 'text', text: `cancelled ${id}` }] }
+        }
+        const items = listScheduled(dir).filter(x => x.chat_id === chat_id)
+        return { content: [{ type: 'text', text: items.length ? items.map(describeScheduled).join('\n') : 'nothing scheduled' }] }
       }
       default:
         return {

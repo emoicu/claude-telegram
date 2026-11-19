@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Channel, FakeTelegram } from './harness'
 
@@ -53,6 +53,19 @@ describe('inbound messages', () => {
     expect(access.pending[code!].senderId).toBe(String(STRANGER))
     expect(ch.notifications.some(n => n.method === 'notifications/claude/channel')).toBe(false)
   })
+})
+
+describe('pairing confirmation', () => {
+  test('an approval dropped by /telegram:access is confirmed to the user and cleaned up', async () => {
+    await boot(allowlist)
+    mkdirSync(join(ch.stateDir, 'approved'), { recursive: true })
+    const file = join(ch.stateDir, 'approved', String(STRANGER))
+    writeFileSync(file, '')
+    const msg = await tg.waitFor(c => c.method === 'sendMessage' && /Paired/.test(c.body.text), 'confirmation', 8000)
+    expect(String(msg.body.chat_id)).toBe(String(STRANGER))
+    for (let i = 0; i < 50 && existsSync(file); i++) await Bun.sleep(20)
+    expect(existsSync(file)).toBe(false)
+  }, 15_000)
 })
 
 describe('tools', () => {

@@ -22,6 +22,17 @@
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/failure-telegram.ts\"",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   }
 }

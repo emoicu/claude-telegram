@@ -2,6 +2,7 @@
 // it into a chat message with bars and reset times in the reader's own
 // time zone. Pure functions; helpers/tmux-session-helper.ts does the I/O.
 
+import { mdLines } from './format.ts'
 import { type T, tEn } from './i18n.ts'
 
 export type UsageItem = { title: string; pct?: number; reset?: string }
@@ -96,10 +97,5 @@ export function formatUsage(panel: { items: UsageItem[]; lines: string[] }, now:
       )
     }
   }
-  return out.join('\n')
-}
-
-/** Plain-text version for when a rich message cannot be sent. */
-export function plainUsage(markdown: string): string {
-  return markdown.replace(/^#+ /gm, '').replace(/\*\*|`/g, '')
+  return mdLines(out)
 }

@@ -24,6 +24,11 @@ afterEach(async () => {
 
 const allowlist = { dmPolicy: 'allowlist', allowFrom: [String(OWNER)], groups: {}, pending: {} }
 
+/** A message the bot sent, rich or plain, and what it says. */
+const said = (c: { method: string; body: any }, re: RegExp) =>
+  (c.method === 'sendMessage' || c.method === 'sendRichMessage') && re.test(c.body.text ?? c.body.rich_message?.markdown ?? '')
+const textOf = (c: { body: any }): string => c.body.text ?? c.body.rich_message?.markdown ?? ''
+
 describe('inbound messages', () => {
   test('a message from an allowlisted user reaches Claude with its metadata', async () => {
     await boot(allowlist)
@@ -61,7 +66,7 @@ describe('pairing confirmation', () => {
     mkdirSync(join(ch.stateDir, 'approved'), { recursive: true })
     const file = join(ch.stateDir, 'approved', String(STRANGER))
     writeFileSync(file, '')
-    const msg = await tg.waitFor(c => c.method === 'sendMessage' && /Paired/.test(c.body.text), 'confirmation', 8000)
+    const msg = await tg.waitFor(c => said(c, /Paired/), 'confirmation', 8000)
     expect(String(msg.body.chat_id)).toBe(String(STRANGER))
     for (let i = 0; i < 50 && existsSync(file); i++) await Bun.sleep(20)
     expect(existsSync(file)).toBe(false)
@@ -212,10 +217,11 @@ describe('/doctor', () => {
   test('reports the setup and flags an open group', async () => {
     await boot({ ...allowlist, groups: { '-100123': { requireMention: false, allowFrom: [] } } })
     tg.dm(OWNER, '/doctor', { entities: [{ type: 'bot_command', offset: 0, length: 7 }] })
-    const msg = await tg.waitFor(c => c.method === 'sendMessage' && /Doctor/.test(c.body.text ?? ''), 'doctor report')
-    expect(msg.body.text).toContain('Bot @test_bot')
-    expect(msg.body.text).toContain('⚠️ Group -100123: every member can talk to Claude, without even mentioning the bot')
-    expect(msg.body.text).toContain('✅ .env (bot token) is private')
+    const msg = await tg.waitFor(c => said(c, /Doctor/), 'doctor report')
+    expect(msg.method).toBe('sendRichMessage')
+    expect(textOf(msg)).toContain('Bot @test_bot')
+    expect(textOf(msg)).toContain('### Needs attention\n\n- ⚠️ Group -100123: every member can talk to Claude, without even mentioning the bot')
+    expect(textOf(msg)).toContain('- ✅ .env (bot token) is private')
   })
 
   test('strangers get nothing', async () => {
@@ -223,7 +229,7 @@ describe('/doctor', () => {
     tg.dm(STRANGER, '/doctor', { entities: [{ type: 'bot_command', offset: 0, length: 7 }] })
     tg.dm(OWNER, 'marker')
     await ch.waitNotification('notifications/claude/channel', p => p.content === 'marker')
-    expect(tg.sent('sendMessage').some(c => /Doctor/.test(c.body.text ?? ''))).toBe(false)
+    expect(tg.sent(/^send/).some(c => said(c, /Doctor/))).toBe(false)
   })
 })
 
@@ -233,12 +239,12 @@ describe('/language', () => {
   test('switches what the bot shows to Chinese', async () => {
     await boot(allowlist)
     command(OWNER, '/language')
-    const picker = await tg.waitFor(c => c.method === 'sendMessage' && /Choose the language/.test(c.body.text ?? ''), 'language picker')
+    const picker = await tg.waitFor(c => said(c, /Pick the language/), 'language picker')
     const buttons = picker.body.reply_markup.inline_keyboard.flat().map((b: any) => b.callback_data)
     expect(buttons).toEqual(['lang:en', 'lang:zh'])
 
-    tg.press(OWNER, 'lang:zh', picker.result.message_id, picker.body.text)
-    await tg.waitFor(c => c.method === 'editMessageText' && /语言：中文/.test(c.body.text ?? ''), 'confirmation in Chinese')
+    tg.press(OWNER, 'lang:zh', picker.result.message_id, textOf(picker))
+    await tg.waitFor(c => c.method === 'editMessageText' && /语言：\*\*中文/.test(textOf(c)), 'confirmation in Chinese')
     expect(readFileSync(join(ch.stateDir, 'language'), 'utf8')).toBe('zh\n')
     const menu = await tg.waitFor(
       c => c.method === 'setMyCommands' && JSON.stringify(c.body.commands).includes('检查一切是否正常'),
@@ -247,7 +253,7 @@ describe('/language', () => {
     expect(menu.body.commands.map((c: any) => c.command)).toContain('language')
 
     command(OWNER, '/status')
-    await tg.waitFor(c => c.method === 'sendMessage' && /已配对/.test(c.body.text ?? ''), 'status in Chinese')
+    await tg.waitFor(c => said(c, /已配对/), 'status in Chinese')
 
     ch.notify('notifications/claude/channel/permission_request', {
       request_id: 'fghij',
@@ -265,5 +271,29 @@ describe('/language', () => {
     const answer = await tg.waitFor(c => c.method === 'answerCallbackQuery', 'refusal')
     expect(answer.body.text).toBe('Not authorized.')
     expect(existsSync(join(ch.stateDir, 'language'))).toBe(false)
+  })
+})
+
+describe('command answers', () => {
+  const command = (user: number, text: string) => tg.dm(user, text, { entities: [{ type: 'bot_command', offset: 0, length: text.length }] })
+
+  test('are rich messages, and plain text when Telegram rejects rich ones', async () => {
+    await boot(allowlist)
+    command(OWNER, '/start')
+    const rich = await tg.waitFor(c => said(c, /Pairing/), '/start')
+    expect(rich.method).toBe('sendRichMessage')
+    expect(textOf(rich)).toContain('### 🔗 Pairing')
+
+    tg.failNext('sendRichMessage', { error_code: 400, description: 'Bad Request: rich messages are not supported' })
+    command(OWNER, '/status')
+    const plain = await tg.waitFor(c => c.method === 'sendMessage' && /Paired/.test(textOf(c)), 'plain /status')
+    expect(textOf(plain)).not.toContain('**')
+  })
+
+  test('a pairing code comes in a code block to copy', async () => {
+    await boot({ dmPolicy: 'pairing', allowFrom: [], groups: {}, pending: {} })
+    tg.dm(STRANGER, 'hi')
+    const msg = await tg.waitFor(c => said(c, /telegram:access pair/), 'pairing code')
+    expect(textOf(msg)).toMatch(/```\n\/telegram:access pair [a-f0-9]{6}\n```/)
   })
 })

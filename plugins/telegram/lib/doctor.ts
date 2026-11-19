@@ -2,6 +2,7 @@
 // are pure functions over facts that server.ts collects.
 
 import type { Access } from './access.ts'
+import { mdLines } from './format.ts'
 import { type T, tEn } from './i18n.ts'
 
 export type Check = { level: 'ok' | 'warn' | 'fail'; text: string }
@@ -95,7 +96,7 @@ export function ago(ms: number, t: T = tEn): string {
 
 const ICON = { ok: '✅', warn: '⚠️', fail: '❌' } as const
 
-/** The chat message: a one-line verdict, then every check. */
+/** The chat message (rich Markdown): a verdict, what needs attention, then the passing checks folded away. */
 export function formatReport(header: string[], checks: Check[], t: T = tEn): string {
   const fails = checks.filter(c => c.level === 'fail').length
   const warns = checks.filter(c => c.level === 'warn').length
@@ -104,5 +105,14 @@ export function formatReport(header: string[], checks: Check[], t: T = tEn): str
     : warns
       ? t('doctorWarns', { warns })
       : t('doctorAllGood')
-  return [t('doctorTitle', { verdict }), '', ...header, '', ...checks.map(c => `${ICON[c.level]} ${c.text}`)].join('\n')
+  const problems = checks.filter(c => c.level !== 'ok')
+  const fine = checks.filter(c => c.level === 'ok')
+  const line = (c: Check) => `- ${ICON[c.level]} ${c.text.replace(/\n\s*/g, '\n  ')}`
+  const out = [t('doctorTitle', { verdict }), mdLines(header)]
+  if (problems.length) out.push(t('doctorNeedsAttention'), problems.map(line).join('\n'))
+  if (fine.length) {
+    const list = fine.map(line).join('\n')
+    out.push(problems.length ? `<details><summary>${t('doctorOkCount', { n: fine.length })}</summary>\n\n${list}\n</details>` : list)
+  }
+  return out.filter(Boolean).join('\n\n')
 }

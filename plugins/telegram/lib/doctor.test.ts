@@ -81,11 +81,15 @@ describe('other checks', () => {
 })
 
 describe('formatReport', () => {
-  test('verdict first, then every check', () => {
+  test('verdict, then what needs attention, passing checks folded', () => {
     const text = formatReport(['Plugin 1.0'], [
       { level: 'ok', text: 'fine' },
       { level: 'warn', text: 'hmm' },
     ])
-    expect(text).toBe('🩺 Doctor: ⚠️ 1 warning\n\nPlugin 1.0\n\n✅ fine\n⚠️ hmm')
+    expect(text).toBe(
+      '## 🩺 Doctor: ⚠️ 1 warning\n\nPlugin 1.0\n\n### Needs attention\n\n- ⚠️ hmm\n\n' +
+        '<details><summary>✅ 1 check OK</summary>\n\n- ✅ fine\n</details>',
+    )
+    expect(formatReport([], [{ level: 'ok', text: 'fine' }])).toBe('## 🩺 Doctor: ✅ All good\n\n- ✅ fine')
   })
 })

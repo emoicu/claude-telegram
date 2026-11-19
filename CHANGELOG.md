@@ -6,6 +6,7 @@ All notable changes to this plugin. The format follows [Keep a Changelog](https:
 
 ### Changed
 
+- Every command answer is a rich message with headings, bold values and code blocks, falling back to plain text: `/start`, `/status`, `/session` (with a context bar), `/doctor` (what needs attention first, passing checks folded away), `/language`, the `/model` and `/effort` pickers and results, `/new`, `/sessions` and the pairing messages (the code in a block to copy).
 - `/usage` (built-in command helper) answers with a rich message: a bar and a 🟢 🟡 🔴 level per limit, translated titles, and reset times shown in the reader's own time zone with a countdown, instead of the panel's raw UTC text. Parsing and formatting are in `lib/usage.ts`.
 
 ## [1.1.0] - 2026-11-19

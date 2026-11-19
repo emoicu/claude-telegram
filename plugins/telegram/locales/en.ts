@@ -6,19 +6,18 @@
 export const en = {
   // Common
   notAuthorized: 'Not authorized.',
-  notPaired: 'Not paired. Send me a message to get a pairing code.',
+  notPaired: '🔒 **Not paired yet.** Send me any message to get a pairing code.',
   cancelButton: '✖ Cancel',
   cancelledToast: 'Cancelled',
   cancelledMessage: '✖ Cancelled',
 
   // Pairing and /start, /status
-  start:
-    'This bot bridges Telegram to a Claude Code session.\n\nTo pair:\n1. DM me anything — you’ll get a 6-char code\n2. In Claude Code: /telegram:access pair <code>\n\nAfter that, DMs here reach that session.',
-  pairRequired: 'Pairing required — run in Claude Code:\n\n/telegram:access pair {code}',
-  pairStillPending: 'Still pending — run in Claude Code:\n\n/telegram:access pair {code}',
-  pairApproved: 'Paired! Say hi to Claude.',
-  statusPaired: 'Paired as {name}.',
-  statusPending: 'Pending pairing — run in Claude Code:\n\n/telegram:access pair {code}',
+  start: '## 🤖 Claude Code on Telegram\nThis bot connects Telegram to a Claude Code session on your server.\n\n### 🔗 Pairing\n1. Send me any message: you get a 6-character code\n2. Run it in Claude Code: `/telegram:access pair <code>`\n\nAfter that, your messages here reach the session. Send /help to see what it can do.',
+  pairRequired: '### 🔗 Pairing required\nRun this in Claude Code:\n```\n/telegram:access pair {code}\n```',
+  pairStillPending: '### ⏳ Still waiting for approval\nRun this in Claude Code:\n```\n/telegram:access pair {code}\n```',
+  pairApproved: '### ✅ Paired\nSay hi to Claude. Send /help to see what it can do.',
+  statusPaired: '✅ **Paired** as {name}\n\n/help what it can do · /doctor health check',
+  statusPending: '### ⏳ Waiting for approval\nRun this in Claude Code:\n```\n/telegram:access pair {code}\n```',
 
   // Command menu
   cmdStart: 'Welcome and setup guide',
@@ -33,8 +32,8 @@ export const en = {
   cmdEffort: 'Set reasoning effort, e.g. /effort high',
 
   // /language
-  languageChoose: 'Choose the language of the bot’s own messages (menus, status, buttons):',
-  languageSet: '✅ Language: {name}. Claude answers in whatever language you write to it.',
+  languageChoose: '### 🌐 Language\nPick the language of the bot’s own messages (menus, status, buttons). Claude answers in whatever language you write.',
+  languageSet: '✅ Language: **{name}**',
 
   // /help
   helpTitle: '## 🤖 Claude Code on Telegram',
@@ -78,12 +77,12 @@ export const en = {
   shortcutTooOld: 'This message is too old for shortcuts.',
 
   // /model, /effort and the command helper
-  pickModel: 'Choose a model (default = account default):',
-  pickEffort: 'Choose reasoning effort (higher is slower and uses more quota):',
-  pickApplying: '⏳ /{command} {option} — applying when the session is idle…',
+  pickModel: '### 🧠 Model\nPick one. `default` uses your account’s default.',
+  pickEffort: '### 💭 Reasoning effort\nHigher thinks longer and uses more quota.',
+  pickApplying: '⏳ **/{command} {option}** · applying when the session is idle…',
   helperBadArg: 'Invalid argument for /{command}: use letters, digits and . _ : - only.',
   helperFailed: '/{command} failed: {error}',
-  helperNew: '🆕 Started a new conversation. The previous context was cleared.',
+  helperNew: '### 🆕 New conversation\nThe previous context was cleared. Memory files and project rules still apply.',
   helperUsageTitle: '📊 Claude usage',
   helperUsageNoPct: 'percentage not found',
   usageSession: 'Current session (5-hour limit)',
@@ -93,11 +92,11 @@ export const en = {
   usageResetsRaw: '⏱ Resets {when}',
   helperUsageFailed: '⚠️ Could not read the usage panel. Try again in a moment.',
   helperNoResult: '⚠️ Typed {cmd} but could not read the result. Try again in a moment.',
-  helperModelSwitched: '✅ Model switched to {model} (saved as default)',
-  helperModelUnchanged: 'ℹ️ Model unchanged: {model}',
-  helperModelUnknown: '⚠️ Unknown model: {model}\nOptions: {options}',
-  helperEffortSet: '✅ Effort set to {effort} (saved as default)',
-  helperEffortAuto: '✅ Effort set to auto',
+  helperModelSwitched: '✅ Model: **{model}** (saved as default)',
+  helperModelUnchanged: 'ℹ️ Model unchanged: **{model}**',
+  helperModelUnknown: '⚠️ Unknown model: **{model}**\nOptions: {options}',
+  helperEffortSet: '✅ Reasoning effort: **{effort}** (saved as default)',
+  helperEffortAuto: '✅ Reasoning effort: **auto**',
   helperEffortInvalid: '⚠️ Invalid level. Options: {options}',
   helperSlowerNext: 'The new model re-reads the conversation, so the next reply may be slower.',
   helperBusy: '⚠️ The session stayed busy, so /{command} was not run. Try again later.',
@@ -108,18 +107,18 @@ export const en = {
   // /session
   sessionNoProcess: 'Session info is unavailable: no Claude Code process found.',
   sessionNoFile: 'Session info is unavailable: no session file for pid {pid}.',
-  sessionTitle: '🧠 Claude session',
-  sessionName: 'Name: {name} · {status}',
-  sessionId: 'Session: {id}… · up {uptime}',
-  sessionDir: 'Directory: {dir}{branch}',
-  sessionModel: 'Model: {model}',
-  sessionEffort: 'Effort: {effort}',
-  sessionMode: 'Permission mode: {mode}',
-  sessionContext: 'Context: {tokens} tokens{pct}',
-  sessionContextPct: ' ({pct}% of {window})',
-  sessionNoContext: 'Context: no API call yet',
-  sessionMessages: 'Messages: {n}',
-  sessionCost: 'Cost so far (API-equivalent): ${cost}',
+  sessionTitle: '### 🧠 Claude session',
+  sessionName: '**{name}** · {status} · up {uptime}',
+  sessionId: 'Session `{id}`',
+  sessionDir: '📁 `{dir}`{branch}',
+  sessionModel: '**Model** {model}',
+  sessionEffort: '**Reasoning effort** {effort}',
+  sessionMode: '**Permission mode** {mode}',
+  sessionContext: '**Context** {tokens}{pct}',
+  sessionContextPct: ' / {window} ({pct}%)',
+  sessionNoContext: '**Context** no API call yet',
+  sessionMessages: '**Messages** {n}',
+  sessionCost: '**Cost so far** ${cost} (API prices)',
   sessionVersions: 'Claude Code {claude} · plugin {plugin}',
 
   // Questions (AskUserQuestion)
@@ -216,10 +215,10 @@ export const en = {
   routerRetryOnce: 'Restarting it once.',
   routerGaveUp: 'Gave up; send a message here to try again.',
   routerLastLines: 'Last lines of its terminal:',
-  routerSessions: 'Sessions ({running} running, room for about {limit}):',
-  routerSessionLine: '{icon} {name} — {state}{mem}, active {ago} min ago',
+  routerSessions: '### 🗂 Sessions\n{running} running · room for about {limit}',
+  routerSessionLine: '{icon} **{name}** · {state}{mem} · active {ago} min ago',
   routerMainDm: 'main (DM)',
-  routerMemory: 'Memory free: {free} of {total} MB · idle stop after {idle} min',
+  routerMemory: '💾 {free} of {total} MB free · idle sessions stop after {idle} min',
   'routerState.starting': 'starting',
   'routerState.busy': 'busy',
   'routerState.idle': 'idle',
@@ -230,7 +229,9 @@ export const en = {
   'routerState.stopped': 'stopped',
 
   // /doctor
-  doctorTitle: '🩺 Doctor: {verdict}',
+  doctorTitle: '## 🩺 Doctor: {verdict}',
+  doctorNeedsAttention: '### Needs attention',
+  doctorOkCount: '✅ {n} {n:check|checks} OK',
   doctorAllGood: '✅ All good',
   doctorFails: '❌ {fails} {fails:problem|problems}',
   doctorFailsWarns: '❌ {fails} {fails:problem|problems}, {warns} {warns:warning|warnings}',

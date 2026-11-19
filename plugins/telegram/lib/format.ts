@@ -151,3 +151,21 @@ export function renderDraft(w: StatusInfo, now: number, t: T = tEn): string {
   if (w.note) lines.push(`💭 ${clip(w.note, 80)}`)
   return lines.join('\n')
 }
+
+/** Rich Markdown as plain text, for when a rich message is rejected. */
+export function plainMarkdown(md: string): string {
+  return md
+    .replace(/^```.*$\n?/gm, '')
+    .replace(/^#+ /gm, '')
+    .replace(/<\/?(details|summary)>/g, '')
+    .replace(/\*\*|`/g, '')
+}
+
+/**
+ * Join lines so each shows on its own line in a rich message: lines next
+ * to each other get a Markdown hard break (two trailing spaces), and an
+ * empty string starts a new paragraph.
+ */
+export function mdLines(lines: string[]): string {
+  return lines.join('\n').replace(/([^\n])\n(?=[^\n])/g, '$1  \n')
+}

@@ -24,9 +24,9 @@ import { spawn, execFileSync } from 'node:child_process'
 import { appendFileSync, readFileSync, openSync, closeSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { expandTimes } from '../lib/format.ts'
+import { expandTimes, plainMarkdown } from '../lib/format.ts'
 import { translator } from '../lib/i18n.ts'
-import { formatUsage, parseUsagePanel, plainUsage } from '../lib/usage.ts'
+import { formatUsage, parseUsagePanel } from '../lib/usage.ts'
 
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels', 'telegram')
@@ -77,9 +77,10 @@ const send = (text: string, reply_markup?: unknown) =>
   tg('sendMessage', reply_markup ? { text, reply_markup } : { text })
 
 /** A rich Markdown message (Bot API 10.1), plain text if Telegram rejects it. */
-async function sendRich(markdown: string): Promise<void> {
-  if (await tg('sendRichMessage', { rich_message: { markdown: expandTimes(markdown, 'rich') } })) return
-  await send(plainUsage(expandTimes(markdown, 'text')))
+async function sendRich(markdown: string, reply_markup?: unknown): Promise<void> {
+  const extra = reply_markup ? { reply_markup } : {}
+  if (await tg('sendRichMessage', { rich_message: { markdown: expandTimes(markdown, 'rich') }, ...extra })) return
+  await tg('sendMessage', { text: plainMarkdown(expandTimes(markdown, 'text')), ...extra })
 }
 
 // ---- Claude session and tmux --------------------------------------------
@@ -132,7 +133,7 @@ async function jobNew(pane: string): Promise<void> {
   await typeCommand(pane, '/clear')
   await sleep(3000)
   log('new: typed /clear')
-  await send(t('helperNew'))
+  await sendRich(t('helperNew'))
 }
 
 async function jobUsage(pane: string): Promise<void> {
@@ -228,9 +229,9 @@ async function jobSlash(pane: string, cmd: string): Promise<void> {
   if (!out) tmux('send-keys', '-t', pane, 'Escape') // close any panel left open
   const described = describeSlash(cmd, out)
   let msg = described.text
-  if (confirmed && described.switched) msg += `\n${t('helperSlowerNext')}`
+  if (confirmed && described.switched) msg += `\n\n${t('helperSlowerNext')}`
   log(`slash: ${cmd} -> ${msg.split('\n')[0]}`)
-  await send(msg, { remove_keyboard: true })
+  await sendRich(msg)
 }
 
 // ---- entry -----------------------------------------------------------------

@@ -6,19 +6,18 @@ import type { Messages } from './en.ts'
 export const zh: Messages = {
   // Common
   notAuthorized: '你没有权限。',
-  notPaired: '还没配对。给我发条消息就能拿到配对码。',
+  notPaired: '🔒 **还没配对。** 给我发任意一条消息就能拿到配对码。',
   cancelButton: '✖ 取消',
   cancelledToast: '已取消',
   cancelledMessage: '✖ 已取消',
 
   // Pairing and /start, /status
-  start:
-    '这个机器人把 Telegram 接到一个 Claude Code 会话上。\n\n配对方法：\n1. 私聊我任意内容，你会收到一个 6 位配对码\n2. 在 Claude Code 里输入：/telegram:access pair <配对码>\n\n之后你在这里发的私聊就会到达那个会话。',
-  pairRequired: '需要先配对，请在 Claude Code 里运行：\n\n/telegram:access pair {code}',
-  pairStillPending: '仍在等待配对，请在 Claude Code 里运行：\n\n/telegram:access pair {code}',
-  pairApproved: '配对成功！跟 Claude 打个招呼吧。',
-  statusPaired: '已配对：{name}。',
-  statusPending: '等待配对，请在 Claude Code 里运行：\n\n/telegram:access pair {code}',
+  start: '## 🤖 Telegram 上的 Claude Code\n这个机器人把 Telegram 接到你服务器上的一个 Claude Code 会话。\n\n### 🔗 配对\n1. 给我发任意一条消息，拿到 6 位配对码\n2. 在 Claude Code 里运行：`/telegram:access pair <配对码>`\n\n之后你在这里发的消息就会到达那个会话。发 /help 看它能做什么。',
+  pairRequired: '### 🔗 需要先配对\n在 Claude Code 里运行：\n```\n/telegram:access pair {code}\n```',
+  pairStillPending: '### ⏳ 仍在等待批准\n在 Claude Code 里运行：\n```\n/telegram:access pair {code}\n```',
+  pairApproved: '### ✅ 配对成功\n跟 Claude 打个招呼吧。发 /help 看它能做什么。',
+  statusPaired: '✅ **已配对**：{name}\n\n/help 能做什么 · /doctor 自检',
+  statusPending: '### ⏳ 等待批准\n在 Claude Code 里运行：\n```\n/telegram:access pair {code}\n```',
 
   // Command menu
   cmdStart: '欢迎和设置指南',
@@ -33,8 +32,8 @@ export const zh: Messages = {
   cmdEffort: '设置思考强度，例如 /effort high',
 
   // /language
-  languageChoose: '选择机器人自身消息（菜单、状态、按钮）的语言：',
-  languageSet: '✅ 语言：{name}。Claude 本身会用你发消息时的语言回答。',
+  languageChoose: '### 🌐 语言\n选择机器人自身消息（菜单、状态、按钮）的语言。Claude 本身会用你发消息时的语言回答。',
+  languageSet: '✅ 语言：**{name}**',
 
   // /help
   helpTitle: '## 🤖 Telegram 上的 Claude Code',
@@ -78,12 +77,12 @@ export const zh: Messages = {
   shortcutTooOld: '这条消息太旧了，快捷指令用不了。',
 
   // /model, /effort and the command helper
-  pickModel: '选择模型（default = 账号默认）：',
-  pickEffort: '选择思考强度（越高越慢、越耗额度）：',
-  pickApplying: '⏳ /{command} {option}：等会话空闲后生效…',
+  pickModel: '### 🧠 模型\n选一个。`default` 是账号默认模型。',
+  pickEffort: '### 💭 思考强度\n越高想得越久，也越耗额度。',
+  pickApplying: '⏳ **/{command} {option}** · 等会话空闲后生效…',
   helperBadArg: '/{command} 的参数无效：只能用字母、数字和 . _ : -。',
   helperFailed: '/{command} 失败：{error}',
-  helperNew: '🆕 已开始新对话，之前的上下文已清空。',
+  helperNew: '### 🆕 新对话\n之前的上下文已清空。记忆文件和项目规则照常生效。',
   helperUsageTitle: '📊 Claude 用量',
   helperUsageNoPct: '没找到百分比',
   usageSession: '当前会话（5 小时额度）',
@@ -93,11 +92,11 @@ export const zh: Messages = {
   usageResetsRaw: '⏱ {when} 重置',
   helperUsageFailed: '⚠️ 读不到用量面板，请稍后再试。',
   helperNoResult: '⚠️ 已输入 {cmd}，但读不到结果，请稍后再试。',
-  helperModelSwitched: '✅ 模型已切换为 {model}（已存为默认）',
-  helperModelUnchanged: 'ℹ️ 模型没变：{model}',
-  helperModelUnknown: '⚠️ 未知模型：{model}\n可选：{options}',
-  helperEffortSet: '✅ 思考强度已设为 {effort}（已存为默认）',
-  helperEffortAuto: '✅ 思考强度已设为 auto',
+  helperModelSwitched: '✅ 模型：**{model}**（已存为默认）',
+  helperModelUnchanged: 'ℹ️ 模型没变：**{model}**',
+  helperModelUnknown: '⚠️ 未知模型：**{model}**\n可选：{options}',
+  helperEffortSet: '✅ 思考强度：**{effort}**（已存为默认）',
+  helperEffortAuto: '✅ 思考强度：**auto**',
   helperEffortInvalid: '⚠️ 级别无效。可选：{options}',
   helperSlowerNext: '新模型要重新读一遍对话，所以下一条回复可能会慢一些。',
   helperBusy: '⚠️ 会话一直在忙，/{command} 没有执行，请稍后再试。',
@@ -108,18 +107,18 @@ export const zh: Messages = {
   // /session
   sessionNoProcess: '拿不到会话信息：没找到 Claude Code 进程。',
   sessionNoFile: '拿不到会话信息：进程 {pid} 没有会话文件。',
-  sessionTitle: '🧠 Claude 会话',
-  sessionName: '名称：{name} · {status}',
-  sessionId: '会话：{id}… · 已运行 {uptime}',
-  sessionDir: '目录：{dir}{branch}',
-  sessionModel: '模型：{model}',
-  sessionEffort: '思考强度：{effort}',
-  sessionMode: '权限模式：{mode}',
-  sessionContext: '上下文：{tokens} tokens{pct}',
-  sessionContextPct: '（占 {window} 的 {pct}%）',
-  sessionNoContext: '上下文：还没有调用过 API',
-  sessionMessages: '消息数：{n}',
-  sessionCost: '目前费用（按 API 价格折算）：${cost}',
+  sessionTitle: '### 🧠 Claude 会话',
+  sessionName: '**{name}** · {status} · 已运行 {uptime}',
+  sessionId: '会话 `{id}`',
+  sessionDir: '📁 `{dir}`{branch}',
+  sessionModel: '**模型** {model}',
+  sessionEffort: '**思考强度** {effort}',
+  sessionMode: '**权限模式** {mode}',
+  sessionContext: '**上下文** {tokens}{pct}',
+  sessionContextPct: ' / {window}（{pct}%）',
+  sessionNoContext: '**上下文** 还没有调用过 API',
+  sessionMessages: '**消息数** {n}',
+  sessionCost: '**目前费用** ${cost}（按 API 价格折算）',
   sessionVersions: 'Claude Code {claude} · 插件 {plugin}',
 
   // Questions (AskUserQuestion)
@@ -216,10 +215,10 @@ export const zh: Messages = {
   routerRetryOnce: '重启一次试试。',
   routerGaveUp: '已放弃；在这里发条消息可以再试一次。',
   routerLastLines: '它终端里的最后几行：',
-  routerSessions: '会话（{running} 个在运行，大约还能开到 {limit} 个）：',
-  routerSessionLine: '{icon} {name} — {state}{mem}，{ago} 分钟前活跃',
+  routerSessions: '### 🗂 会话\n{running} 个在运行 · 大约还能开到 {limit} 个',
+  routerSessionLine: '{icon} **{name}** · {state}{mem} · {ago} 分钟前活跃',
   routerMainDm: 'main（私聊）',
-  routerMemory: '可用内存：{free} / {total} MB · 空闲 {idle} 分钟后停止',
+  routerMemory: '💾 可用内存 {free} / {total} MB · 空闲 {idle} 分钟后停止',
   'routerState.starting': '启动中',
   'routerState.busy': '忙碌',
   'routerState.idle': '空闲',
@@ -230,7 +229,9 @@ export const zh: Messages = {
   'routerState.stopped': '已停止',
 
   // /doctor
-  doctorTitle: '🩺 自检：{verdict}',
+  doctorTitle: '## 🩺 自检：{verdict}',
+  doctorNeedsAttention: '### 需要注意',
+  doctorOkCount: '✅ {n} 项正常',
   doctorAllGood: '✅ 一切正常',
   doctorFails: '❌ {fails} 个问题',
   doctorFailsWarns: '❌ {fails} 个问题，{warns} 个警告',

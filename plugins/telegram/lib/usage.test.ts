@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { translate } from './i18n'
-import { formatUsage, parseReset, parseUsagePanel, plainUsage, usageBar } from './usage'
+import { plainMarkdown } from './format'
+import { formatUsage, parseReset, parseUsagePanel, usageBar } from './usage'
 
 const SCREEN = `
   Settings   Status   Config   Usage
@@ -54,16 +55,16 @@ describe('formatUsage', () => {
       [
         '### 📊 Claude 用量',
         '',
-        '**当前会话（5 小时额度）** 🟢 17%',
-        '`██░░░░░░░░`',
+        '**当前会话（5 小时额度）** 🟢 17%  ',
+        '`██░░░░░░░░`  ',
         `⏱ {{time:${at1}|t}} 重置 · {{time:${at1}|r}}`,
         '',
-        '**本周（全部模型）** 🟡 56%',
-        '`██████░░░░`',
+        '**本周（全部模型）** 🟡 56%  ',
+        '`██████░░░░`  ',
         `⏱ {{time:${at2}|wdt}} 重置 · {{time:${at2}|r}}`,
       ].join('\n'),
     )
-    expect(plainUsage(text)).not.toMatch(/\*\*|`|###/)
+    expect(plainMarkdown(text)).not.toMatch(/\*\*|`|###/)
   })
   test('bar', () => {
     expect(usageBar(0)).toBe('░░░░░░░░░░')

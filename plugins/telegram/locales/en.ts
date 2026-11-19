@@ -48,6 +48,7 @@ export const en = {
   helpReactionsTitle: '**👍 Reactions as shortcuts**',
   helpReactionsIntro: 'React to one of its messages:',
   helpReactionsNone: '(none configured)',
+  helpReactionsHold: '{emojis} wait {sec} s before they reach Claude: remove the reaction to take it back. Removed within {min} min, Claude undoes it.',
   helpCommandsTitle: '**⌨️ Commands**',
   helpCmdSession: '- `/session` model, effort, context size and cost of this session',
   helpCmdDoctor: '- `/doctor` health check: access, permissions, logs, hooks, reminders',

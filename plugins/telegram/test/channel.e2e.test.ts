@@ -170,6 +170,68 @@ describe('reaction shortcuts', () => {
     const n = await ch.waitNotification('notifications/claude/channel')
     expect(n.content).toContain('Shall I go on?')
   })
+
+  const react = (messageId: number, from: string[], to: string[]) =>
+    tg.push({
+      message_reaction: {
+        chat: { id: OWNER, type: 'private' },
+        message_id: messageId,
+        user: { id: OWNER, is_bot: false, first_name: 'Owner' },
+        date: 0,
+        old_reaction: from.map(emoji => ({ type: 'emoji', emoji })),
+        new_reaction: to.map(emoji => ({ type: 'emoji', emoji })),
+      },
+    })
+  const replyId = async (text: string) => {
+    await ch.tool('reply', { chat_id: String(OWNER), text })
+    return (await tg.waitFor(c => c.method === 'sendMessage' && c.body.text === text, 'reply')).result.message_id as number
+  }
+  const shortcutsSeen = () => ch.notifications.filter(n => n.method === 'notifications/claude/channel' && /on your message/.test(n.params?.content))
+
+  test('a ❤ removed during the hold never reaches Claude', async () => {
+    await boot(allowlist, { TELEGRAM_REACTION_HOLD_SEC: '0.5' })
+    const id = await replyId('Use tabs from now on?')
+    react(id, [], ['❤'])
+    await Bun.sleep(150)
+    react(id, ['❤'], [])
+    await Bun.sleep(800)
+    expect(shortcutsSeen()).toHaveLength(0)
+  })
+
+  test('a ❤ reaches Claude after the hold, and removing it later asks for an undo', async () => {
+    await boot(allowlist, { TELEGRAM_REACTION_HOLD_SEC: '0.3' })
+    const id = await replyId('Use spaces from now on?')
+    react(id, [], ['❤'])
+    await Bun.sleep(100)
+    expect(shortcutsSeen()).toHaveLength(0)
+    const first = await ch.waitNotification('notifications/claude/channel', p => /Reaction ❤ on your message/.test(p.content))
+    expect(first.content).toContain('Remember this')
+    react(id, ['❤'], [])
+    const undo = await ch.waitNotification('notifications/claude/channel', p => /withdrawn/.test(p.content))
+    expect(undo.content).toContain('Undo what you did')
+    expect(undo.content).toContain('Use spaces from now on?')
+  })
+
+  test('removing a reaction that is not held does nothing', async () => {
+    await boot(allowlist, { TELEGRAM_REACTION_HOLD_SEC: '0.3' })
+    const id = await replyId('Next step?')
+    react(id, [], ['👍'])
+    await ch.waitNotification('notifications/claude/channel', p => /👍/.test(p.content))
+    react(id, ['👍'], [])
+    await Bun.sleep(400)
+    expect(shortcutsSeen()).toHaveLength(1)
+  })
+
+  test('removing it after the undo window does nothing', async () => {
+    await boot(allowlist, { TELEGRAM_REACTION_HOLD_SEC: '0', TELEGRAM_REACTION_UNDO_MIN: '0.001' })
+    const id = await replyId('Rewrite the parser?')
+    react(id, [], ['🔥'])
+    await ch.waitNotification('notifications/claude/channel', p => /🔥/.test(p.content))
+    await Bun.sleep(200)
+    react(id, ['🔥'], [])
+    await Bun.sleep(400)
+    expect(shortcutsSeen()).toHaveLength(1)
+  })
 })
 
 describe('progress', () => {

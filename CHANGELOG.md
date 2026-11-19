@@ -2,6 +2,12 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.3.0] - 2026-11-19
+
+### Added
+
+- **Take back a reaction shortcut** by removing the reaction. ❤ (remember) and 🔥 (do it without asking) wait 10 seconds before they reach Claude; removing the reaction in that time drops them. Removed within 30 minutes after that, Claude is asked to undo what it did; later, removing a reaction does nothing. `TELEGRAM_REACTION_HOLD_SEC` and `TELEGRAM_REACTION_UNDO_MIN` set the times, `"hold": true` in `reactions.json` holds other shortcuts too, and `/help` explains it. Logic in `lib/holds.ts`.
+
 ## [1.2.2] - 2026-11-19
 
 ### Changed
@@ -70,6 +76,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.3.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.3.0
 [1.2.2]: https://github.com/emoicu/claude-telegram/releases/tag/v1.2.2
 [1.2.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.2.1
 [1.2.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.2.0

@@ -5,7 +5,7 @@
 **Drive Claude Code from Telegram: chat with your sessions, watch them work, and steer them from your phone.**
 
 [![test](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml)
-[![version](https://img.shields.io/badge/version-1.2.2-blue)](plugins/telegram/.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-1.3.0-blue)](plugins/telegram/.claude-plugin/plugin.json)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-channel%20plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
@@ -125,7 +125,9 @@ React to one of the bot's messages to send Claude an instruction about it:
 | 👀 more detail | ✍ write it down | ❤ remember this preference | 🔥 do it without asking |
 | 🙏 pause (interrupts the turn) | 🎉 wrap up | | |
 
-Customise them in `reactions.json` in the state directory.
+❤ and 🔥 act on their own, so they wait 10 seconds before reaching Claude: remove the reaction in that time and nothing happens. Removed within 30 minutes after that, Claude is asked to undo what it did (delete the memory, revert the change); later, removing a reaction does nothing.
+
+Customise them in `reactions.json` in the state directory (`"hold": true` makes another shortcut wait the same way).
 
 ## Multi-session router
 
@@ -156,6 +158,8 @@ Everything is optional; set variables in `~/.claude/channels/telegram/.env` or t
 | `TELEGRAM_STATUS_AFTER_SEC` | 30 | Delay before the status line appears |
 | `TELEGRAM_REACTION_STATUS` | on | `off` falls back to a static acknowledgement reaction |
 | `TELEGRAM_QUICK_BUTTONS` | off | `dm` or `all`: shortcut buttons under the latest reply |
+| `TELEGRAM_REACTION_HOLD_SEC` | 10 | How long ❤ and 🔥 wait before reaching Claude, so removing the reaction takes them back (`0`: send at once) |
+| `TELEGRAM_REACTION_UNDO_MIN` | 30 | How long after that removing the reaction asks Claude to undo it (`0`: never) |
 | `TELEGRAM_ASK` | on | `off` keeps `AskUserQuestion` in the terminal |
 | `TELEGRAM_NOTIFY` | on | `off` disables the terminal-prompt notice and failure alerts |
 | `TELEGRAM_CONTEXT_WINDOW` | — | Context size in tokens, to show usage as a percentage |
@@ -219,7 +223,7 @@ Based on upstream plugin v0.0.7 (commit `b5b01ac`); the latest upstream change t
 - **Inbox cleanup**: downloaded photos and files in `inbox/` older than `TELEGRAM_INBOX_KEEP_DAYS` (default 30, `0` keeps everything) are deleted at startup and every six hours.
 - **Progress checklists**: a `progress` tool posts a task checklist (rich task list, plain text as a fallback) and edits that one message as steps start and finish, instead of sending new messages. Claude passes the whole step list each call (`todo`, `doing`, `done`, `failed`, `skipped`); a call after everything is done, or with `new: true`, starts a fresh one. The current checklist per chat is kept in `progress.json` in the state directory, so a restarted session keeps editing it.
 - **Local times**: in `reply` and `edit_message`, `{{time:VALUE}}` or `{{time:VALUE|FORMAT}}` becomes a Telegram date_time entity (Bot API 9.5), shown in the reader's own time zone. VALUE is ISO-8601 with a zone, Unix seconds, or `now` / `now+30m` / `now-2h`; FORMAT is Telegram's (`t`, `T`, `d`, `D`, `w`, combined like `wDT`, or `r` for relative). Works with `markdownv2` and `rich`; plain text gets a UTC time.
-- **Reaction shortcuts**: reacting to one of the bot's messages sends Claude a short instruction quoting that message, e.g. 👍 go ahead, 👌 take your recommended option, 👎 try another approach, 🤔 explain more simply, 👀 more detail, ✍ write it down, ❤ remember this preference, 🔥 do it without asking, 🙏 pause (also interrupts the running turn), 🎉 wrap up. The same shortcuts can also appear as buttons under the latest reply (👍 👎 🤔 🔥 and ⋯ for the rest): off by default, `TELEGRAM_QUICK_BUTTONS=dm` shows them in direct messages, `all` also in groups. Override or extend the map in `reactions.json` in the state directory: `{"emoji": "meaning"}` or `{"emoji": {"meaning": "…", "label": "…"}}`, `null` removes one.
+- **Reaction shortcuts**: reacting to one of the bot's messages sends Claude a short instruction quoting that message, e.g. 👍 go ahead, 👌 take your recommended option, 👎 try another approach, 🤔 explain more simply, 👀 more detail, ✍ write it down, ❤ remember this preference, 🔥 do it without asking, 🙏 pause (also interrupts the running turn), 🎉 wrap up. The same shortcuts can also appear as buttons under the latest reply (👍 👎 🤔 🔥 and ⋯ for the rest): off by default, `TELEGRAM_QUICK_BUTTONS=dm` shows them in direct messages, `all` also in groups. Override or extend the map in `reactions.json` in the state directory: `{"emoji": "meaning"}` or `{"emoji": {"meaning": "…", "label": "…"}}`, `null` removes one. Held shortcuts (❤ 🔥, or any with `"hold": true`) wait `TELEGRAM_REACTION_HOLD_SEC` (10 s) before they reach Claude; removing the reaction during the wait drops them, and removing it within `TELEGRAM_REACTION_UNDO_MIN` (30 min) afterwards sends Claude an undo request. Quick buttons are not held. Pending and delivered shortcuts are kept in memory, so a restart forgets them.
 - **Questions as buttons**: a `PreToolUse` hook (`hooks/ask-telegram.ts`) catches `AskUserQuestion` in the channel session and posts each question to the chat with a button per option (multi-select questions get a Done button) instead of the terminal picker. Once every question is answered, the answers reach Claude as a channel message; typing a free-form answer works too. If nothing can be sent, the terminal picker is used as usual. Disable with `TELEGRAM_ASK=off`.
 - **Full `/help`**: the help command sends a guide (rich message) built from what the install has turned on: talking to Claude, reaction shortcuts, the available commands and topics (router mode). Put a `help.md` in the state directory to send your own text instead, e.g. a translation.
 - **Unlisted groups**: messages from a group that is not allowlisted are still dropped, but its id and title are recorded in `unlisted-groups.json` in the state directory, so you can find the id for `/telegram:access group add`.

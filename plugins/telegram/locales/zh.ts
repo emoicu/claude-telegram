@@ -48,6 +48,7 @@ export const zh: Messages = {
   helpReactionsTitle: '**👍 表情回应当快捷指令**',
   helpReactionsIntro: '对它的某条消息点个表情：',
   helpReactionsNone: '（未配置）',
+  helpReactionsHold: '{emojis} 会等 {sec} 秒才发给 Claude，期间取消表情就作废；{min} 分钟内取消，Claude 会撤销那次操作。',
   helpCommandsTitle: '**⌨️ 命令**',
   helpCmdSession: '- `/session` 当前会话的模型、思考强度、上下文大小和费用',
   helpCmdDoctor: '- `/doctor` 自检：访问权限、文件权限、日志、hook、提醒',

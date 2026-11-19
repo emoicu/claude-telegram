@@ -31,6 +31,7 @@ import {
   cancelScheduled, deliverDue, describeScheduled, listScheduled, MAX_PER_CHAT, MAX_TEXT, newId, parseWhen, type Repeat,
   saveScheduled, scheduleDir, scheduledSender,
 } from './lib/schedule.ts'
+import { envDuration, Holds } from './lib/holds.ts'
 import { bare, DEFAULT_LABELS, mergeShortcuts, PAUSE_REACTION, QUICK_FIRST, type Shortcut } from './lib/shortcuts.ts'
 import { type Key, LANGUAGES, languageFile, normalizeLang, translate } from './lib/i18n.ts'
 import {type GateResult, isAllowedChat, isMentionedIn, 
@@ -396,20 +397,62 @@ function shortcuts(): Map<string, Shortcut> {
   return mergeShortcuts(custom, labels)
 }
 
+// Held shortcuts (❤ 🔥 by default) wait TELEGRAM_REACTION_HOLD_SEC (10) before
+// they reach Claude; removing the reaction meanwhile drops them, and removing
+// it within TELEGRAM_REACTION_UNDO_MIN (30) after that asks Claude to undo.
+const REACTION_HOLD_MS = envDuration(process.env.TELEGRAM_REACTION_HOLD_SEC, 1000, 10)
+const REACTION_UNDO_MS = envDuration(process.env.TELEGRAM_REACTION_UNDO_MIN, 60_000, 30)
+const holds = new Holds(REACTION_HOLD_MS, REACTION_UNDO_MS)
+
+const findShortcut = (emoji: string): Shortcut | undefined => shortcuts().get(bare(emoji)) ?? shortcuts().get(emoji)
+
+/** The /help line about taking back held shortcuts, if any are held. */
+function holdHelp(): string[] {
+  const held = [...shortcuts()].filter(([, v]) => v.hold).map(([e]) => e)
+  if (!held.length || REACTION_HOLD_MS <= 0) return []
+  return [t('helpReactionsHold', { emojis: held.join(' '), sec: REACTION_HOLD_MS / 1000, min: REACTION_UNDO_MS / 60_000 })]
+}
+
 /** Tell Claude the user picked a shortcut on one of its messages. */
 function deliverShortcut(chat: string, messageId: number, emoji: string, user: { id: string; username?: string }, via: string): boolean {
   const sent = findSent(chat, messageId)
-  const sc = shortcuts().get(bare(emoji)) ?? shortcuts().get(emoji)
+  const sc = findShortcut(emoji)
   if (!sent || !sc) return false
   if (bare(emoji) === PAUSE_REACTION) interruptClaude()
-  const quote = sent.text.replace(/\s+/g, ' ').trim()
+  notifyShortcut(chat, messageId, emoji, user, `[${via} ${emoji} on your message ${messageId}] ${sc.meaning}`, sent.text)
+  return true
+}
+
+/** The user removed a held shortcut's reaction: drop it, or ask Claude to undo it. */
+function withdrawShortcut(chat: string, messageId: number, emoji: string, user: { id: string; username?: string }): void {
+  const outcome = holds.withdraw(Holds.key(chat, messageId, bare(emoji)))
+  if (outcome === 'cancelled') {
+    log.info(`reaction ${emoji} on message ${messageId} taken back before it reached Claude`)
+    return
+  }
+  if (outcome !== 'undo') return
+  const sent = findSent(chat, messageId)
+  const sc = findShortcut(emoji)
+  if (!sent || !sc) return
+  log.info(`reaction ${emoji} on message ${messageId} withdrawn: asking Claude to undo it`)
+  notifyShortcut(
+    chat,
+    messageId,
+    emoji,
+    user,
+    `[Reaction ${emoji} withdrawn on your message ${messageId}] The user removed this reaction, which had been sent to you as: "${sc.meaning}" ` +
+      'Undo what you did for it (for example delete the memory you saved, or revert the change you made), then confirm briefly in the chat. If you had not acted on it yet, drop it.',
+    sent.text,
+  )
+}
+
+function notifyShortcut(chat: string, messageId: number, emoji: string, user: { id: string; username?: string }, head: string, text: string): void {
+  const quote = text.replace(/\s+/g, ' ').trim()
   noteStatusChat(chat)
   void mcp.notification({
     method: 'notifications/claude/channel',
     params: {
-      content:
-        `[${via} ${emoji} on your message ${messageId}] ${sc.meaning}\n` +
-        `Your message began: "${quote.length > 200 ? `${quote.slice(0, 199)}…` : quote}"`,
+      content: `${head}\nYour message began: "${quote.length > 200 ? `${quote.slice(0, 199)}…` : quote}"`,
       meta: {
         chat_id: chat,
         message_id: String(messageId),
@@ -422,7 +465,6 @@ function deliverShortcut(chat: string, messageId: number, emoji: string, user: {
   }).catch(err => {
     log.warn('failed to deliver shortcut to Claude', err)
   })
-  return true
 }
 
 // Quick buttons under the latest reply. Only one message carries them at a
@@ -874,6 +916,7 @@ function helpText(): string {
     t('helpReactionsTitle'),
     t('helpReactionsIntro'),
     reactions || t('helpReactionsNone'),
+    ...holdHelp(),
     '',
     t('helpCommandsTitle'),
     t('helpCmdSession'),
@@ -1896,13 +1939,19 @@ bot.on('message_reaction', async ctx => {
     ? access.allowFrom.includes(sender)
     : TOPIC_CHAT === chat && (access.groups[chat]?.allowFrom?.length ? access.groups[chat]!.allowFrom! : access.allowFrom).includes(sender)
   if (!allowed) return
-  const before = new Set(r.old_reaction.filter(x => x.type === 'emoji').map(x => (x as { emoji: string }).emoji))
-  const added = r.new_reaction
-    .filter(x => x.type === 'emoji')
-    .map(x => (x as { emoji: string }).emoji)
-    .filter(e => !before.has(e))
-  for (const emoji of added) {
-    if (deliverShortcut(chat, r.message_id, emoji, { id: sender, username: r.user?.username }, 'Reaction')) return
+  const emojis = (list: typeof r.old_reaction) => list.filter(x => x.type === 'emoji').map(x => (x as { emoji: string }).emoji)
+  const before = new Set(emojis(r.old_reaction))
+  const after = new Set(emojis(r.new_reaction))
+  const user = { id: sender, username: r.user?.username }
+  for (const emoji of before) if (!after.has(emoji)) withdrawShortcut(chat, r.message_id, emoji, user)
+  for (const emoji of after) {
+    if (before.has(emoji)) continue
+    if (findShortcut(emoji)?.hold && findSent(chat, r.message_id)) {
+      log.info(`reaction ${emoji} on message ${r.message_id} held for ${REACTION_HOLD_MS / 1000}s`)
+      holds.hold(Holds.key(chat, r.message_id, bare(emoji)), () => deliverShortcut(chat, r.message_id, emoji, user, 'Reaction'))
+      return
+    }
+    if (deliverShortcut(chat, r.message_id, emoji, user, 'Reaction')) return
   }
 })
 

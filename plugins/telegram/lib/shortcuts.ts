@@ -1,9 +1,11 @@
 // Reaction shortcuts: a reaction (or quick button) on one of the bot's
 // messages becomes a short instruction to Claude. Defaults here;
 // <state>/reactions.json overrides them ({"emoji": "meaning"} or
-// {"emoji": {"meaning": "…", "label": "…"}}, null removes one).
+// {"emoji": {"meaning": "…", "label": "…", "hold": true}}, null removes one).
+// A held shortcut waits a few seconds before it reaches Claude, so the user
+// can take it back by removing the reaction (see lib/holds.ts).
 
-export type Shortcut = { meaning: string; label: string }
+export type Shortcut = { meaning: string; label: string; hold: boolean }
 
 export const DEFAULT_REACTIONS: Record<string, string> = {
   '👍': 'Agreed, go ahead: continue with what this message proposes.',
@@ -17,6 +19,9 @@ export const DEFAULT_REACTIONS: Record<string, string> = {
   '🙏': 'Pause: stop the current work and wait for my next instruction.',
   '🎉': 'Done: wrap up, commit the work and clean up temporary files.',
 }
+
+/** Shortcuts that act on their own (memory, unasked changes) are held. */
+export const DEFAULT_HELD = ['❤', '🔥']
 
 /** Also interrupts a running turn. */
 export const PAUSE_REACTION = '🙏'
@@ -34,16 +39,19 @@ export const bare = (emoji: string) => emoji.replace(/\uFE0F/g, '')
 /** Defaults merged with the parsed reactions.json (anything else is ignored). */
 export function mergeShortcuts(custom?: unknown, labels: Record<string, string> = DEFAULT_LABELS): Map<string, Shortcut> {
   const map = new Map<string, Shortcut>()
-  for (const [e, meaning] of Object.entries(DEFAULT_REACTIONS)) map.set(e, { meaning, label: labels[e] ?? DEFAULT_LABELS[e] ?? '' })
+  for (const [e, meaning] of Object.entries(DEFAULT_REACTIONS)) {
+    map.set(e, { meaning, label: labels[e] ?? DEFAULT_LABELS[e] ?? '', hold: DEFAULT_HELD.includes(e) })
+  }
   if (custom && typeof custom === 'object' && !Array.isArray(custom)) {
     for (const [e, v] of Object.entries(custom as Record<string, unknown>)) {
       if (v == null) map.delete(e)
-      else if (typeof v === 'string') map.set(e, { meaning: v, label: map.get(e)?.label ?? '' })
+      else if (typeof v === 'string') map.set(e, { meaning: v, label: map.get(e)?.label ?? '', hold: map.get(e)?.hold ?? false })
       else if (typeof v === 'object') {
-        const o = v as { meaning?: unknown; label?: unknown }
+        const o = v as { meaning?: unknown; label?: unknown; hold?: unknown }
         map.set(e, {
           meaning: typeof o.meaning === 'string' ? o.meaning : (map.get(e)?.meaning ?? ''),
           label: typeof o.label === 'string' ? o.label : (map.get(e)?.label ?? ''),
+          hold: typeof o.hold === 'boolean' ? o.hold : (map.get(e)?.hold ?? false),
         })
       }
     }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  chunk, clip, describeTool, expandTimes, fmtDuration, fmtElapsed, fmtTokens, parseTime, renderChecklist,
+  chunk, clip, describeTool, expandTimes, fmtDuration, fmtElapsed, fmtTokens, mdSpaced, parseTime, plainMarkdown, renderChecklist,
   renderDraft, renderStatus, safeName,
 } from './format.ts'
 import { isNewer } from './version.ts'
@@ -129,5 +129,13 @@ describe('numbers', () => {
     expect(isNewer('2.1.326', '2.1.326')).toBe(false)
     expect(isNewer('2.2.0', '2.10.0')).toBe(false)
     expect(isNewer('3.0.0-beta', '2.9.9')).toBe(true)
+  })
+})
+
+describe('mdSpaced', () => {
+  test('puts a blank Braille line around bold titles, which plain text drops', () => {
+    const md = mdSpaced(['**Title**', 'one\ntwo', '**Section**', '- a'])
+    expect(md).toBe('**Title**\n\n\u2800\n\none  \ntwo\n\n\u2800\n\n**Section**\n\n\u2800\n\n- a')
+    expect(plainMarkdown(md)).toBe('Title\n\none\ntwo\n\nSection\n\n- a')
   })
 })

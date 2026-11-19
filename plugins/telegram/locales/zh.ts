@@ -216,7 +216,7 @@ export const zh: Messages = {
   routerRetryOnce: '重启一次试试。',
   routerGaveUp: '已放弃；在这里发条消息可以再试一次。',
   routerLastLines: '它终端里的最后几行：',
-  routerSessions: '**🗂 会话**\n{running} 个在运行 · 大约还能开到 {limit} 个',
+  routerSessions: '**🗂 会话**\n\n{running} 个在运行 · 大约还能开到 {limit} 个',
   routerSessionLine: '{icon} **{name}** · {state}{mem} · {ago} 分钟前活跃',
   routerMainDm: 'main（私聊）',
   routerMemory: '💾 可用内存 {free} / {total} MB · 空闲 {idle} 分钟后停止',

@@ -87,9 +87,9 @@ describe('formatReport', () => {
       { level: 'warn', text: 'hmm' },
     ])
     expect(text).toBe(
-      '**🩺 Doctor: ⚠️ 1 warning**\n\n- Plugin 1.0\n\n**Needs attention**\n\n- ⚠️ hmm\n\n' +
+      '**🩺 Doctor: ⚠️ 1 warning**\n\n\u2800\n\n- Plugin 1.0\n\n\u2800\n\n**Needs attention**\n\n\u2800\n\n- ⚠️ hmm\n\n' +
         '<details><summary>✅ 1 check OK</summary>\n\n- ✅ fine\n\n</details>',
     )
-    expect(formatReport([], [{ level: 'ok', text: 'fine' }])).toBe('**🩺 Doctor: ✅ All good**\n\n- ✅ fine')
+    expect(formatReport([], [{ level: 'ok', text: 'fine' }])).toBe('**🩺 Doctor: ✅ All good**\n\n\u2800\n\n- ✅ fine')
   })
 })

@@ -221,7 +221,7 @@ describe('/doctor', () => {
     const msg = await tg.waitFor(c => said(c, /Doctor/), 'doctor report')
     expect(msg.method).toBe('sendRichMessage')
     expect(textOf(msg)).toContain('Bot @test_bot')
-    expect(textOf(msg)).toContain('**Needs attention**\n\n- ⚠️ Group -100123: every member can talk to Claude, without even mentioning the bot')
+    expect(textOf(msg)).toContain('**Needs attention**\n\n\u2800\n\n- ⚠️ Group -100123: every member can talk to Claude, without even mentioning the bot')
     expect(textOf(msg)).toContain('- ✅ .env (bot token) is private')
   })
 

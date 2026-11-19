@@ -814,7 +814,7 @@ async function reportSessions(chatId: string, thread?: number): Promise<void> {
   const mem = memInfoMB()
   const where = thread ? { message_thread_id: thread } : {}
   const markdown = mdSpaced([
-    t('routerSessions', { running: running().length, limit: cap.limit }),
+    ...t('routerSessions', { running: running().length, limit: cap.limit }).split('\n\n'),
     mdList(lines),
     t('routerMemory', { free: Math.round(mem.available), total: Math.round(mem.total), idle: IDLE_MS / 60_000 }),
   ])

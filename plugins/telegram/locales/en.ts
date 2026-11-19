@@ -216,7 +216,7 @@ export const en = {
   routerRetryOnce: 'Restarting it once.',
   routerGaveUp: 'Gave up; send a message here to try again.',
   routerLastLines: 'Last lines of its terminal:',
-  routerSessions: '**🗂 Sessions**\n{running} running · room for about {limit}',
+  routerSessions: '**🗂 Sessions**\n\n{running} running · room for about {limit}',
   routerSessionLine: '{icon} **{name}** · {state}{mem} · active {ago} min ago',
   routerMainDm: 'main (DM)',
   routerMemory: '💾 {free} of {total} MB free · idle sessions stop after {idle} min',

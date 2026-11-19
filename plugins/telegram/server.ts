@@ -845,7 +845,7 @@ setInterval(() => {
 
 bot.command('start', async ctx => {
   if (!dmCommandGate(ctx)) return
-  await sayRich(chatOf(ctx), t('start'))
+  await sayRich(chatOf(ctx), mdSpaced(t('start').split('\n\n')))
 })
 
 // LOCAL PATCH: a full guide, built from what this install has turned on.

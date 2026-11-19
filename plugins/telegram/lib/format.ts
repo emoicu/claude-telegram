@@ -160,6 +160,7 @@ export function plainMarkdown(md: string): string {
     .replace(/<\/?(details|summary)>/g, '')
     .replace(/\*\*|`/g, '')
     .replace(/ +$/gm, '')
+    .replace(/^\u2800\n*/gm, '')
 }
 
 /**
@@ -168,11 +169,22 @@ export function plainMarkdown(md: string): string {
  * which stay together with hard breaks.
  */
 export function mdSpaced(items: string[]): string {
-  return items
-    .filter(x => x !== '')
-    .map(x => x.replace(/([^\n ])\n(?!\n|- |\d+\. )/g, '$1  \n'))
-    .join('\n\n')
+  const out: string[] = []
+  for (const x of items) {
+    if (x === '') continue
+    // A title (a line that is all bold) gets an empty line around it:
+    // Telegram drops blank lines, but keeps a paragraph of one blank
+    // Braille character.
+    const title = /^\*\*[^*\n]+\*\*$/.test(x)
+    if (title && out.length) out.push(SPACER)
+    out.push(x.replace(/([^\n ])\n(?!\n|- |\d+\. )/g, '$1  \n'))
+    if (title) out.push(SPACER)
+  }
+  return out.join('\n\n')
 }
+
+/** U+2800 BRAILLE PATTERN BLANK: shows as nothing but is not whitespace. */
+const SPACER = '\u2800'
 
 /**
  * A bulleted list. Spaced by default (a blank line between items, which

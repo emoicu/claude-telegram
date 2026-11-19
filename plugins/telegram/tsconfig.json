@@ -12,5 +12,5 @@
     "verbatimModuleSyntax": false,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["server.ts", "router.ts", "hooks/**/*.ts", "helpers/**/*.ts", "lib/**/*.ts", "test/**/*.ts"]
+  "include": ["server.ts", "router.ts", "hooks/**/*.ts", "helpers/**/*.ts", "lib/**/*.ts", "core/**/*.ts", "test/**/*.ts"]
 }

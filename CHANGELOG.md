@@ -2,6 +2,31 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.7.1] - 2026-11-20
+
+### Fixed
+
+- Security: a typed `yes abcde` permission reply now needs a sender in the global `allowFrom`, like the buttons. Before, a group member allowed only by the group's own `allowFrom` could approve tool calls by typing.
+- Security: "Always allow" is remembered per tool. Allowing a Read in a folder no longer lets a later Write, Edit or Bash with the same folder through on its own (answers remembered before are forgotten once). A prompt that was already answered is no longer remembered in place of a newer one.
+- Router: topics are told apart by group as well as by number, so the same topic number in two forum groups no longer shares one session (and one conversation).
+- Router: a message sent while its session is shutting down (`/restart`, idle stop, updates) is kept for the next session instead of being lost.
+- Router: at capacity, extra messages no longer each stop another idle session while the first one is still exiting.
+- Router: messages to and from sessions are no longer cut inside a character (Chinese, emoji) when the socket is busy, and a line split across reads is put back together.
+- Router: when a session cannot be started (tmux fails), the chat is no longer told "starting" every 3 seconds; the router backs off, gives up after 3 tries and says so once.
+- Router: checks no longer overlap when Telegram is slow (duplicate notices).
+- Router: only allowed senders can revive a session that kept crashing, and a poll vote from someone not allowed no longer wakes a stopped session. Commands addressed to another bot (`/sessions@otherbot`, `/restart@otherbot`) are ignored.
+- Carrying on after an interrupted turn: a session waiting for the user (a permission prompt, a question) is not asked to carry on; a session that came back as a new conversation, one in a topic closed meanwhile, or one the router restarted for not connecting is not asked either; a crash loop no longer announces a recovery before giving up; the 10-minute "only once" guard only covers the carried-on turn; the notices no longer hold up the router; main carries on in the direct message chat it last heard from; the carried-on turn shows typing and the status line.
+- Questions (AskUserQuestion): quick taps on several questions or options no longer lose answers or deliver them twice, and a tap while the questions are still being sent no longer says "expired".
+- The ⏹ Stop button and quick buttons work in plain groups for allowed members (they always said "not authorized").
+- 👀 on a message in one chat no longer stays forever when another chat writes at the same time.
+- `reply` with files and no text sends the files (it failed before sending anything).
+- A photo whose download fails is skipped instead of being handed to Claude as an error page.
+- A long rich reply that fails partway only sends the missing parts as plain text instead of repeating everything.
+- The "Paired!" confirmation is sent once, not by every session.
+- Scheduled messages: a repeating message no longer drifts a minute per failed send, and an outage skips that occurrence instead of deleting the whole series. A network error no longer causes a second, plain copy.
+- Long text without spaces is never split inside an emoji.
+- Command helper (`/new`, `/model`, `/usage`…): a long job no longer loses its lock to the next one, and a job that never gets the lock no longer runs anyway.
+
 ## [1.7.0] - 2026-11-20
 
 ### Added

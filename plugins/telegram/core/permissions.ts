@@ -131,8 +131,7 @@ export function handlePermissionButtons(mcp: Server, bot: Bot, loadAccess: () =>
 
     // "Always allow": mark the prompt the PermissionRequest hook recorded, so
     // the hook allows the same kind of prompt by itself from now on.
-    let remembered: string | undefined
-    remembered = rememberPrompt(pendingPermissions.get(request_id), choice === 'always')
+    const remembered = rememberPrompt(pendingPermissions.get(request_id), choice === 'always')
     void mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior },

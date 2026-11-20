@@ -217,6 +217,7 @@ export const zh: Messages = {
   routerInterrupted: '⚠️ 会话在 Claude 干活时意外中断，正在恢复…',
   routerContinuing: '✅ 会话已恢复，Claude 正在接着刚才的任务做。',
   routerInterruptedAgain: '⚠️ 会话自动继续后不久又中断了，这次不再自动继续。发条消息告诉 Claude 接下来做什么。',
+  routerStartFailed: '⚠️ 无法启动这个会话（tmux failed：打不开它的窗口），已停止重试。在这里发一条消息即可重试。',
   routerInterruptedFresh: '⚠️ 会话已恢复，但原来的对话接不回来，现在是一个新对话。请告诉 Claude 接下来做什么。',
   routerResumeUnsupported: '✅ 会话已恢复，但它的插件版本太旧，不能自动继续：发条消息让 Claude 接着做。',
   routerCrashLoop: '⚠️ 这个会话一启动就崩溃，所以我不再重启它了。在这里发条消息可以再试一次。',

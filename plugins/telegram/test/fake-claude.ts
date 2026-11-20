@@ -40,6 +40,8 @@ await Bun.connect({
   unix: process.env.TELEGRAM_ROUTER_SOCKET!,
   socket: {
     open(sock) {
+      // fake-plugin holds the plugin version to report (default 9.9.9).
+      const plugin = existsSync(join(dir, 'fake-plugin')) ? readFileSync(join(dir, 'fake-plugin'), 'utf8').trim() : '9.9.9'
       // An older plugin (fake-no-resume) does not say what it can do.
       const can = existsSync(join(dir, 'fake-no-resume')) ? {} : { can: ['resume'] }
       if (existsSync(join(dir, 'fake-split-hello'))) {
@@ -49,7 +51,7 @@ await Bun.connect({
         setTimeout(() => sock.write(bytes.subarray(cut)), 300)
         return
       }
-      sock.write(`${JSON.stringify({ hello: process.env.TELEGRAM_SLOT, plugin: '9.9.9', ...can })}\n`)
+      sock.write(`${JSON.stringify({ hello: process.env.TELEGRAM_SLOT, plugin, ...can })}\n`)
     },
     data(_sock, chunk) {
       appendFileSync(join(dir, 'received.log'), chunk)

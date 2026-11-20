@@ -240,6 +240,27 @@ describe.skipIf(!HAS_TMUX)('/restart', () => {
   }, 20_000)
 })
 
+describe.skipIf(!HAS_TMUX)('plugin updates', () => {
+  test('main restarts for a new plugin and says when it is back', async () => {
+    setStatus('idle')
+    // A router with short update timings and a main session of its own.
+    await restartRouter({ TELEGRAM_ROUTER_UPDATE_CHECK_MS: '500', TELEGRAM_ROUTER_UPDATE_IDLE_MS: '0' }, () =>
+      process.kill(starts()[0]!.pid, 'SIGKILL'),
+    )
+    await until('main to start again', () => starts()[1])
+    const plugins = join(claudeDir, 'plugins')
+    mkdirSync(plugins, { recursive: true })
+    writeFileSync(join(plugins, 'installed_plugins.json'), JSON.stringify({ plugins: { 'telegram@emoicu-plugins': [{ version: '9.9.10' }] } }))
+    writeFileSync(join(claudeDir, 'fake-plugin'), '9.9.10')
+    await tg.waitFor(said(/9\.9\.10 is installed\. Restarting this session/), 'updating notice', 15_000)
+    await until('a start for the update', () => starts()[2])
+    const back = await tg.waitFor(said(/Restarted, same conversation resumed · plugin 9\.9\.10/), 'back notice', 15_000)
+    expect(back.body.disable_notification).toBe(false) // the phone rings
+    await Bun.sleep(3000)
+    expect(starts().length).toBe(3) // up to date now: not restarted again
+  }, 40_000)
+})
+
 describe.skipIf(!HAS_TMUX)('carrying on after an interrupted turn', () => {
   const received = () => {
     try {

@@ -90,9 +90,10 @@ const START_TIMEOUT_MS = 120_000 // a session that has not connected by then is 
 const START_RETRY_MAX_MS = 5 * 60_000 // longest wait between attempts to open a session's tmux window
 const START_FAILURES_TOLD = 3 // then stop trying to open a session's window and tell its chat
 const MAX_SOCKET_LINE = 16 * 1024 * 1024 // a session's line longer than this is dropped
-const UPDATE_CHECK_MS = 30_000 // how often to look for a newer plugin or Claude Code on disk
+// The two update timings can be shortened for tests.
+const UPDATE_CHECK_MS = Number(process.env.TELEGRAM_ROUTER_UPDATE_CHECK_MS) || 30_000 // how often to look for a newer plugin or Claude Code on disk
 const VERSION_RUN_MS = 10 * 60_000 // how often to run `claude --version` when its path does not tell
-const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this much quiet
+const UPDATE_IDLE_MS = Number(process.env.TELEGRAM_ROUTER_UPDATE_IDLE_MS ?? 5 * 60_000) // restart an outdated session only after this much quiet
 // Claude Code records a conversation's system prompt (plugin instructions
 // included) once and replays it on --resume; off renders it fresh, so a
 // session resumed after a plugin update follows the new instructions.
@@ -187,7 +188,7 @@ async function api(method: string, body: Record<string, unknown> = {}): Promise<
 }
 
 /** Fire-and-forget message to a slot's chat (its topic, or every allowlisted DM for main). */
-async function notify(slot: Slot, text: string): Promise<number | undefined> {
+async function notify(slot: Slot, text: string, loud = false): Promise<number | undefined> {
   const chats = slot.chat ? [slot.chat] : loadAccess().allowFrom
   let id: number | undefined
   for (const chat_id of chats) {
@@ -196,7 +197,7 @@ async function notify(slot: Slot, text: string): Promise<number | undefined> {
         chat_id,
         text,
         ...(slot.thread ? { message_thread_id: slot.thread } : {}),
-        disable_notification: true,
+        disable_notification: !loud,
       })
       id ??= sent.message_id
     } catch (err) {
@@ -254,6 +255,7 @@ type Runtime = {
   plugin?: string // plugin version its server.ts runs, from its hello
   can?: string[] // what its server.ts understands beyond updates, from its hello
   resumedConversation?: boolean // this process was started with --resume
+  updateNotice?: boolean // the chat was told it restarts for an update
   rssMB?: number
   quickExits: number
   gaveUp?: boolean
@@ -777,6 +779,11 @@ async function onHello(sock: Socket<SockData>, name: string, plugin?: string, ca
     if (message) await api('editMessageText', { chat_id: chat, message_id: message, text }).catch(() => post(chat, thread, text))
     else await post(chat, thread, text)
   }
+  if (r.updateNotice) {
+    // The chat was told the session restarts for an update: say it is back.
+    r.updateNotice = undefined
+    await notify(slot, t(r.resumedConversation ? 'routerRestarted' : 'routerRestartedFresh', { plugin: r.plugin }), true)
+  }
   if (slot.interrupted) await carryOn(slot, r, sock)
   if (r.startNotice) {
     const { chat, id } = r.startNotice
@@ -1237,6 +1244,7 @@ async function tick(): Promise<void> {
         r.quickExits = 0
         if (r.updateTo && slot.pinned) {
           void notify(slot, t('routerUpdating', { version: r.updateTo }))
+          r.updateNotice = true // say so once it is back
         }
         r.updateTo = undefined
       } else {

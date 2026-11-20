@@ -2,6 +2,12 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.7.2] - 2026-11-20
+
+### Changed
+
+- After restarting main for a plugin or Claude Code update, the router says when the session is back ("✅ Restarted, same conversation resumed · plugin 1.7.2"), with sound, so the chat knows the restart finished. Before, only the "restarting" notice was sent.
+
 ## [1.7.1] - 2026-11-20
 
 ### Fixed

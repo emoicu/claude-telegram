@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Channel, FakeTelegram, runHook } from './harness'
 
@@ -92,6 +92,32 @@ describe('Always allow', () => {
     expect(other.stdout).toBe('')
   })
 
+  test('an extra directory allowed for Read does not allow Write there', async () => {
+    const outside = (tool: string) => ({
+      hook_event_name: 'PermissionRequest',
+      session_id: 'sess-1',
+      tool_name: tool,
+      tool_input: { file_path: '/etc/hosts' },
+      permission_suggestions: [{ type: 'addDirectories', directories: ['/etc'], destination: 'session' }],
+    })
+    expect((await runHook('permission-telegram.ts', outside('Read'), env())).stdout).toBe('')
+    ch.notify('notifications/claude/channel/permission_request', {
+      request_id: 'asdfg',
+      tool_name: 'Read',
+      description: 'Read a file',
+      input_preview: '{"file_path":"/etc/hosts"}',
+    })
+    const msg = await tg.waitFor(c => c.method === 'sendMessage' && /Permission/.test(c.body.text), 'prompt')
+    tg.press(OWNER, 'perm:always:asdfg', msg.result.message_id, msg.body.text)
+    const toast = await tg.waitFor(c => c.method === 'answerCallbackQuery', 'toast')
+    expect(toast.body.text).toContain('access to /etc')
+
+    expect(JSON.parse((await runHook('permission-telegram.ts', outside('Read'), env())).stdout).hookSpecificOutput.decision.behavior).toBe('allow')
+    for (const tool of ['Write', 'Edit', 'Bash']) {
+      expect((await runHook('permission-telegram.ts', outside(tool), env())).stdout).toBe('')
+    }
+  })
+
   test('without a hook record the button allows once', async () => {
     ch.notify('notifications/claude/channel/permission_request', {
       request_id: 'zxcvb',
@@ -105,5 +131,63 @@ describe('Always allow', () => {
     const toast = await tg.waitFor(c => c.method === 'answerCallbackQuery', 'toast')
     expect(toast.body.text).toContain('once')
     expect(existsSync(join(ch.stateDir, 'permissions', 'remembered-main.json'))).toBe(false)
+  })
+})
+
+describe('AskUserQuestion hook', () => {
+  const ask = {
+    hook_event_name: 'PreToolUse',
+    tool_name: 'AskUserQuestion',
+    tool_input: {
+      questions: [
+        { header: 'Color', question: 'Which color?', options: [{ label: 'Red' }, { label: 'Blue' }] },
+        { header: 'Size', question: 'Which size?', options: [{ label: 'S' }, { label: 'L' }] },
+      ],
+    },
+  }
+
+  test('the record exists before the first question is sent, so an early tap works', async () => {
+    const askDir = join(ch.stateDir, 'ask')
+    const recordAtSend: boolean[] = []
+    let tapped = false
+    // Tap the first question as soon as Telegram has it, while the hook is
+    // still sending the second one.
+    const push = tg.calls.push.bind(tg.calls)
+    tg.calls.push = (...calls) => {
+      for (const c of calls) {
+        if (c.method !== 'sendMessage' || !/Which/.test(c.body.text)) continue
+        recordAtSend.push(existsSync(askDir) && readdirSync(askDir).some(n => n.endsWith('.json')))
+        if (!tapped) {
+          tapped = true
+          const id = /^ask:([0-9a-f]{8}):/.exec(c.body.reply_markup.inline_keyboard[0][0].callback_data)![1]
+          tg.press(OWNER, `ask:${id}:0:1`, c.result.message_id, c.body.text)
+        }
+      }
+      return push(...calls)
+    }
+    const out = await runHook('ask-telegram.ts', ask, env())
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(recordAtSend).toEqual([true, true])
+
+    const toast = await tg.waitFor(c => c.method === 'answerCallbackQuery', 'toast')
+    expect(toast.body.text).toBe('Selected: Blue')
+
+    // The record ends up with both messages, and the second answer delivers both.
+    const [name] = readdirSync(askDir).filter(n => n.endsWith('.json'))
+    const second = tg.sent('sendMessage').find(c => /Which size/.test(c.body.text))!
+    tg.press(OWNER, `ask:${name!.slice(0, 8)}:1:0`, second.result.message_id, second.body.text)
+    const answers = await ch.waitNotification('notifications/claude/channel')
+    expect(answers.content).toContain('→ Blue')
+    expect(answers.content).toContain('→ S')
+    const rec = JSON.parse(readFileSync(join(askDir, name!), 'utf8'))
+    expect(rec.delivered).toBe(true)
+  })
+
+  test('nothing sent: no record is left behind', async () => {
+    tg.failNext('sendMessage', { error_code: 400, description: 'Bad Request: chat not found' }, { error_code: 400, description: 'Bad Request: chat not found' })
+    const out = await runHook('ask-telegram.ts', ask, env())
+    expect(out.stdout).toBe('')
+    const askDir = join(ch.stateDir, 'ask')
+    expect(existsSync(askDir) ? readdirSync(askDir) : []).toEqual([])
   })
 })

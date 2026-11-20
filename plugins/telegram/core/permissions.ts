@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import type { Access } from '../lib/access.ts'
 import { clip } from '../lib/format.ts'
-import { addRemembered, findPending, loadList, type PendingPrompt, pendingFile, promptLabel, type Remembered, rememberedFile, saveList } from '../lib/remember.ts'
+import { addRemembered, findPending, loadList, markAnswered, type PendingPrompt, pendingFile, promptLabel, type Remembered, rememberedFile, saveList } from '../lib/remember.ts'
 import { ignored, log, SLOT, STATE_DIR, t, TOPIC_CHAT } from './config.ts'
 
 // Stores full permission details for "See more" expansion keyed by request_id.
@@ -58,15 +58,20 @@ export function relayPermissionRequests(mcp: Server, bot: Bot, loadAccess: () =>
 }
 
 /**
- * Remember the answer to a relayed prompt; returns what was remembered, or
- * undefined when the hook left no record of it.
+ * Mark a relayed prompt answered and, for "Always allow", remember it;
+ * returns what was remembered, or undefined.
  */
-function rememberPrompt(details: { tool_name: string; input_preview: string } | undefined): string | undefined {
+function rememberPrompt(details: { tool_name: string; input_preview: string } | undefined, remember: boolean): string | undefined {
   if (!details) return undefined
   try {
     const now = Date.now()
-    const prompt = findPending(loadList<PendingPrompt>(pendingFile(STATE_DIR, SLOT)), details.tool_name, details.input_preview, now)
+    const pendingPath = pendingFile(STATE_DIR, SLOT)
+    const pending = loadList<PendingPrompt>(pendingPath)
+    const prompt = findPending(pending, details.tool_name, details.input_preview, now)
     if (!prompt) return undefined
+    // Answered: a later prompt's "Always allow" must not fall back to this one.
+    saveList(pendingPath, markAnswered(pending, prompt, now))
+    if (!remember) return undefined
     const file = rememberedFile(STATE_DIR, SLOT)
     saveList(file, addRemembered(loadList<Remembered>(file), prompt, now))
     log.info(`always allow: ${promptLabel(prompt)}`)
@@ -127,7 +132,7 @@ export function handlePermissionButtons(mcp: Server, bot: Bot, loadAccess: () =>
     // "Always allow": mark the prompt the PermissionRequest hook recorded, so
     // the hook allows the same kind of prompt by itself from now on.
     let remembered: string | undefined
-    if (choice === 'always') remembered = rememberPrompt(pendingPermissions.get(request_id))
+    remembered = rememberPrompt(pendingPermissions.get(request_id), choice === 'always')
     void mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior },

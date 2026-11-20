@@ -74,7 +74,8 @@ const QUICK_EXIT_MS = 60_000 // a session that dies sooner than this "crashed qu
 const MAX_QUICK_EXITS = 3 // then stop restarting it and tell the user
 const DIALOG_WINDOW_MS = 120_000 // look for the development-channels dialog this long
 const START_TIMEOUT_MS = 120_000 // a session that has not connected by then is stuck
-const UPDATE_CHECK_MS = 10 * 60_000 // how often to look for a newer Claude Code on disk
+const UPDATE_CHECK_MS = 30_000 // how often to look for a newer plugin or Claude Code on disk
+const VERSION_RUN_MS = 10 * 60_000 // how often to run `claude --version` when its path does not tell
 const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this much quiet
 // Claude Code records a conversation's system prompt (plugin instructions
 // included) once and replays it on --resume; off renders it fresh, so a
@@ -940,6 +941,8 @@ async function startTimedOut(slot: Slot, r: Runtime): Promise<void> {
 // ---- Claude Code updates ---------------------------------------------------
 
 /** Version of the Claude Code that new sessions would run. */
+let ranVersion: { at: number; version?: string } | undefined
+
 function installedVersion(): string | undefined {
   try {
     // The native installer links `claude` to …/versions/<version>.
@@ -948,13 +951,17 @@ function installedVersion(): string | undefined {
   } catch (err) {
     ignored('read Claude Code version from its path', err)
   }
+  // Running `claude --version` takes a second or two and blocks the router:
+  // do it at most every VERSION_RUN_MS, not at every update check.
+  if (ranVersion && Date.now() - ranVersion.at < VERSION_RUN_MS) return ranVersion.version
+  ranVersion = { at: Date.now() }
   try {
     const out = execFileSync(CLAUDE_CMD[0]!, ['--version'], { encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'ignore'] })
-    return /(\d+\.\d+\.\d+)/.exec(out)?.[1]
+    ranVersion.version = /(\d+\.\d+\.\d+)/.exec(out)?.[1]
   } catch (err) {
     ignored('run claude --version', err)
   }
-  return undefined
+  return ranVersion.version
 }
 
 

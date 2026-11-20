@@ -38,11 +38,12 @@ function env(extra: Record<string, string> = {}): Record<string, string> {
 }
 
 /** A plugin version directory with the fake router in it. */
-function version(name: string, opts: { crash?: boolean; supervisor?: string } = {}): string {
+function version(name: string, opts: { crash?: boolean; listen?: boolean; supervisor?: string } = {}): string {
   const root = join(dir, 'plugins', name)
   mkdirSync(join(root, 'service'), { recursive: true })
   copyFileSync(join(import.meta.dir, 'fake-router.ts'), join(root, 'router.ts'))
   if (opts.crash) writeFileSync(join(root, 'crash'), '')
+  if (opts.listen) writeFileSync(join(root, 'listen'), '')
   if (opts.supervisor) writeFileSync(join(root, 'service', 'supervisor.ts'), opts.supervisor)
   return root
 }
@@ -153,6 +154,21 @@ describe.skipIf(!HAS_TMUX)('supervisor', () => {
       sock.stop(true)
     }
   })
+
+  test('takes over from a killed supervisor whose router is still running', async () => {
+    install(version('v1', { listen: true }))
+    const first = supervisor()
+    await until('v1 to run', () => runs().length === 1)
+    await until('the router socket', () => existsSync(join(dir, 'state', 'router.sock')))
+    const orphan = Number(read(join(svc, 'router.pid')))
+    first.kill('SIGKILL')
+    await first.exited
+    const second = supervisor()
+    await until('v1 to run again', () => runs().length === 2)
+    expect(second.exitCode).toBeNull()
+    expect(() => process.kill(orphan, 0)).toThrow()
+    expect(read(join(svc, 'supervisor.log'))).toContain(`stopping router pid ${orphan}`)
+  }, 20_000)
 
   test('does not start beside another supervisor', async () => {
     install(version('v1'))

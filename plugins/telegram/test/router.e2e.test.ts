@@ -128,6 +128,44 @@ describe.skipIf(!HAS_TMUX)('/restart', () => {
     await tg.waitFor(said(/Restarted, same conversation/), 'restarted notice', 15_000)
   }, 45_000)
 
+  test('a restarted session that keeps failing is not started again forever', async () => {
+    writeFileSync(join(claudeDir, 'fake-crash'), '')
+    tg.dm(OWNER, '/restart')
+    await tg.waitFor(said(/Restarting this session/), 'restarting notice')
+    await tg.waitFor(said(/keeps (crashing|exiting)|crash/i), 'crash-loop notice', 30_000)
+    const n = starts().length
+    await Bun.sleep(7000)
+    expect(starts().length).toBe(n)
+  }, 50_000)
+
+  test('a question nobody answered does not block a new /restart', async () => {
+    setStatus('busy')
+    await Bun.sleep(3500)
+    tg.dm(OWNER, '/restart')
+    await tg.waitFor(said(/still replying/), 'question')
+    setStatus('idle')
+    await Bun.sleep(3500)
+    tg.dm(OWNER, '/restart')
+    await tg.waitFor(said(/Restarting this session/), 'restarting notice')
+    await until('a second start', () => starts()[1])
+  }, 30_000)
+
+  test('editing an old message to /restart does not restart', async () => {
+    tg.push({
+      edited_message: {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        edit_date: Math.floor(Date.now() / 1000),
+        chat: { id: OWNER, type: 'private' },
+        from: { id: OWNER, is_bot: false, first_name: 'O' },
+        text: '/restart',
+      },
+    })
+    await Bun.sleep(4000)
+    expect(starts().length).toBe(1)
+    expect(tg.sent(/^send|^edit/).some(c => /Restarting/.test(String(c.body.text ?? '')))).toBe(false)
+  }, 20_000)
+
   test('strangers cannot restart anything', async () => {
     tg.dm(STRANGER, '/restart')
     tg.press(STRANGER, 'restart:now:main', 1)

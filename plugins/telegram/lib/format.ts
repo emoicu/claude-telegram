@@ -141,7 +141,8 @@ export function narrowTables(md: string, maxWidth: number): string {
     while (end < lines.length && lines[end]!.includes('|') && lines[end]!.trim() !== '') end++
     const rows = lines.slice(i + 2, end).map(tableCells)
     const widest = Math.max(...[header, ...rows].map(r => r.reduce((sum, c) => sum + displayWidth(c), 0)))
-    if (widest <= maxWidth) {
+    // Nothing to list for a table without rows: keep it as written.
+    if (widest <= maxWidth || !rows.length) {
       out.push(...lines.slice(i, end))
       i = end - 1
       continue

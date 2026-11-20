@@ -2,7 +2,8 @@
 // Stand-in for Claude Code in the router end-to-end tests: it writes the
 // session file the router reads (status from $CLAUDE_CONFIG_DIR/fake-status),
 // keeps a transcript file so --resume counts as valid, says hello on the
-// router socket like server.ts and logs every start to starts.log.
+// router socket like server.ts and logs every start to starts.log. With a
+// fake-crash file it exits right after starting.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -18,6 +19,8 @@ mkdirSync(join(dir, 'sessions'), { recursive: true })
 mkdirSync(join(dir, 'projects', 'test'), { recursive: true })
 writeFileSync(join(dir, 'projects', 'test', `${sessionId}.jsonl`), '')
 appendFileSync(join(dir, 'starts.log'), `${process.pid} ${args.join(' ')}\n`)
+// A Claude that dies right away, before it connects.
+if (existsSync(join(dir, 'fake-crash'))) process.exit(1)
 
 const status = () => {
   try {

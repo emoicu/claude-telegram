@@ -2,6 +2,21 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.6.2] - 2026-11-20
+
+### Fixed
+
+- `/restart` no longer restarts a session forever when the new process keeps failing or never connects: it starts it again once, then the usual crash and start-timeout handling (and its notice) takes over.
+- A `/restart` question nobody answered, or one whose message could not be sent, no longer blocks every later `/restart` with "already restarting". A `/restart` sent while the session was stopping anyway now restarts it instead of leaving the status message at "Restarting".
+- `/restart` and `/sessions` ignore edited messages: editing an old message into `/restart` restarted the session.
+- Supervisor: after the supervisor was killed (SIGKILL, out of memory) its router kept running, and the next supervisor took it for another router and stopped the service. It now stops the router it left behind and carries on.
+- Supervisor: a missing tmux session no longer restarts the tmux unit while its tmux server runs (which ended the sessions); the session is created in the running server, and the unit is restarted only when there is no server.
+- Supervisor: the supervisor's own settings (`TELEGRAM_SUPERVISOR_*`) no longer reach the router and the Claude Code sessions.
+- Supervisor: a version is remembered as good once its router has run a minute, not only when it exits by itself, so a service restart or stop no longer loses the version to fall back to.
+- Launcher: Ctrl-C or SIGTERM stops it and the supervisor when run by hand (the supervisor now exits with 130 or 143 on those signals).
+- `install.sh --service`: the tmux unit only ends a tmux session it created itself, so removing the service no longer ends someone else's `claude` session. Works from shells without `XDG_RUNTIME_DIR` (su, sudo -u) when the service is already running; honours `CLAUDE_CONFIG_DIR`; keeps the last line of a `.env` without a final newline intact; `claude auth status` no longer reads the piped script.
+- Rich replies keep a wide table that has a header but no rows instead of dropping it.
+
 ## [1.6.1] - 2026-11-20
 
 ### Fixed
@@ -147,6 +162,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.6.2]: https://github.com/emoicu/claude-telegram/releases/tag/v1.6.2
 [1.6.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.6.1
 [1.6.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.6.0
 [1.5.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.5.1

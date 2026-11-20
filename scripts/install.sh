@@ -46,13 +46,15 @@ die() {
 }
 
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+# Shells started by su or sudo -u have no XDG_RUNTIME_DIR; systemctl --user needs it.
+if [ -n "$SERVICE" ] && [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then export XDG_RUNTIME_DIR="/run/user/$(id -u)"; fi
 UNIT=claude-telegram.service
 TMUX_UNIT=claude-telegram-tmux.service
 SERVICE_DIR="$STATE_DIR/service"
 
 if [ "$SERVICE" = remove ]; then
   say "Removing the service"
-  if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then export XDG_RUNTIME_DIR="/run/user/$(id -u)"; fi
   if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
     # Stopping the tmux unit ends the Claude Code sessions too.
     systemctl --user disable --now "$UNIT" "$TMUX_UNIT" >/dev/null 2>&1 || true
@@ -72,7 +74,7 @@ command -v claude >/dev/null || die "Claude Code not found. Install it first: ht
 ok "Claude Code $(claude --version 2>/dev/null | head -1)"
 # A session the service starts cannot sign in by itself: it would sit at the
 # login screen, and nobody could be told on Telegram before pairing.
-if claude auth status >/dev/null 2>&1; then
+if claude auth status </dev/null >/dev/null 2>&1; then
   ok "Claude Code is signed in"
 elif [ -n "$SERVICE" ]; then
   die "Claude Code is not signed in. Run claude once and sign in (or claude setup-token), then run this again"
@@ -144,7 +146,7 @@ case ":$PATH:" in *":$BIN_DIR:"*) ;; *) warn "$BIN_DIR is not on your PATH; add 
 
 if [ "$SERVICE" = install ]; then
   say "Service"
-  root=$(bun -e 'const p = require(process.argv[1]); console.log(p.plugins?.[process.argv[2]]?.[0]?.installPath ?? "")' "$HOME/.claude/plugins/installed_plugins.json" "$PLUGIN" 2>/dev/null || true)
+  root=$(bun -e 'const p = require(process.argv[1]); console.log(p.plugins?.[process.argv[2]]?.[0]?.installPath ?? "")' "$CLAUDE_DIR/plugins/installed_plugins.json" "$PLUGIN" 2>/dev/null || true)
   [ -n "$root" ] && [ -f "$root/service/supervisor.ts" ] || die "This plugin version has no service files; update it (claude plugin update $PLUGIN) and run this again"
   if [ -S "$STATE_DIR/router.sock" ] && bun -e 'Bun.connect({ unix: process.argv[1], socket: { data() {} } }).then(s => { s.end(); process.exit(0) }, () => process.exit(1))' "$STATE_DIR/router.sock" 2>/dev/null \
     && ! systemctl --user is-active --quiet "$UNIT" 2>/dev/null; then
@@ -159,6 +161,8 @@ if [ "$SERVICE" = install ]; then
     fi
     workdir="${workdir:-$HOME/projects}"
     workdir="${workdir/#\~/$HOME}"
+    # Start on a new line even if the file does not end with one.
+    if [ -s "$ENV_FILE" ] && [ -n "$(tail -c 1 "$ENV_FILE")" ]; then echo >>"$ENV_FILE"; fi
     printf 'TELEGRAM_ROUTER_MAIN_CWD=%s\nTELEGRAM_ROUTER_PROJECTS=%s\n' "$workdir" "$workdir" >>"$ENV_FILE"
   fi
   mkdir -p "$workdir"
@@ -210,7 +214,7 @@ if [ "$SERVICE" = install ]; then
     else
       ok "Lingering already enabled: the service starts at boot"
     fi
-    # Shells started by su or a service have no XDG_RUNTIME_DIR; systemctl --user needs it.
+    # The user manager started just now: systemctl --user needs its runtime dir.
     if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then export XDG_RUNTIME_DIR="/run/user/$(id -u)"; fi
   fi
   if ! command -v systemctl >/dev/null || ! systemctl --user show-environment >/dev/null 2>&1; then
@@ -240,15 +244,16 @@ EOF
 Description=tmux session for the Claude Code Telegram sessions
 
 # oneshot + RemainAfterExit: the tmux server it forks stays in this unit;
-# stopping the unit ends it and the sessions. If the session already exists
-# (a tmux server someone else started), it is left as it is.
+# stopping the unit ends the session it made, and the Claude sessions in it.
+# A session that already existed (someone else's tmux) is used but never
+# ended: the owned file marks the session this unit made.
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 Environment=PATH=$path
 Environment=LANG=C.UTF-8
-ExecStart=/bin/sh -c '$tmux_bin has-session -t =claude 2>/dev/null || exec $tmux_bin -u new-session -d -s claude -n log tail -n 50 -F $STATE_DIR/router/router.log'
-ExecStop=-$tmux_bin kill-session -t =claude
+ExecStart=/bin/sh -c '$tmux_bin has-session -t =claude 2>/dev/null && exit 0; $tmux_bin -u new-session -d -s claude -n log tail -n 50 -F $STATE_DIR/router/router.log && touch %t/claude-telegram-tmux.owned'
+ExecStop=/bin/sh -c '[ -e %t/claude-telegram-tmux.owned ] || exit 0; rm -f %t/claude-telegram-tmux.owned; $tmux_bin kill-session -t =claude 2>/dev/null; exit 0'
 EOF
   cat >"$UNIT_DIR/$UNIT" <<EOF
 # Written by claude-telegram's install.sh --service.
@@ -263,6 +268,7 @@ StartLimitIntervalSec=0
 Environment=PATH=$path
 Environment=LANG=C.UTF-8
 Environment=TELEGRAM_SUPERVISOR_TMUX_UNIT=$TMUX_UNIT
+${CLAUDE_CONFIG_DIR:+Environment=CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR}
 ExecStart=$SERVICE_DIR/launcher.sh
 Restart=always
 RestartSec=5

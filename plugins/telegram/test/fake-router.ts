@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // Stands in for router.ts in the supervisor tests: copied into each fake
 // plugin version directory. Logs each start to $CLAUDE_CONFIG_DIR/runs.log,
-// exits 3 right away when a "crash" file sits next to it, and otherwise runs
+// exits 3 right away when a "crash" file sits next to it, listens on the
+// router socket when a "listen" file does, and otherwise runs
 // until killed, or (TELEGRAM_ROUTER_SELF_UPDATE=1) exits 0 once another
 // version is installed, like the real router.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
@@ -14,6 +15,8 @@ appendFileSync(
   `${basename(dir)} self=${process.env.TELEGRAM_ROUTER_SELF_UPDATE ?? ''} cwd=${process.cwd()} tmux=${process.env.TELEGRAM_ROUTER_TMUX ?? ''}\n`,
 )
 if (existsSync(join(dir, 'crash'))) process.exit(3)
+// Like the real router: listen on the router socket.
+if (existsSync(join(dir, 'listen'))) Bun.listen({ unix: join(process.env.TELEGRAM_STATE_DIR!, 'router.sock'), socket: { data() {} } })
 
 function installed(): string | undefined {
   try {

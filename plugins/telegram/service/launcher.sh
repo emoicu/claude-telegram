@@ -12,10 +12,16 @@ dir=$(cd "$(dirname "$0")" && pwd)
 quick=${TELEGRAM_LAUNCHER_QUICK_SECS:-30}
 pause=${TELEGRAM_LAUNCHER_PAUSE_SECS:-2}
 fails=0
+child=""
+# Stopping the launcher (Ctrl-C, or SIGTERM without systemd) stops the supervisor too.
+trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 0' INT TERM
 while true; do
   start=$(date +%s)
-  bun "$dir/supervisor.ts"
+  bun "$dir/supervisor.ts" &
+  child=$!
+  wait "$child"
   code=$?
+  child=""
   # 75: another supervisor or router runs; starting again would not help.
   [ "$code" -eq 75 ] && exit 75
   if [ "$code" -ne 0 ] && [ $(($(date +%s) - start)) -lt "$quick" ]; then

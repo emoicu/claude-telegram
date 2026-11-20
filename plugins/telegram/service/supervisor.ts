@@ -37,7 +37,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 /** Bump when this file changes; installed copies update to a higher one. */
-export const SUPERVISOR_VERSION = 1
+export const SUPERVISOR_VERSION = 2
 
 /** Exit code for "another supervisor or router is running": not restarted. */
 export const CONFLICT = 75
@@ -67,6 +67,7 @@ const BAD = join(DIR, 'supervisor.bad')
 const RESTORED = join(DIR, 'supervisor.restored')
 const GOOD = join(DIR, 'router-good')
 const LOCK = join(DIR, 'supervisor.pid')
+const ROUTER_PID = join(DIR, 'router.pid')
 const LOG = join(DIR, 'supervisor.log')
 const SOCKET = join(STATE_DIR, 'router.sock')
 
@@ -204,15 +205,26 @@ function hasSession(name: string): boolean {
  * systemd its own unit owns it, so restarting the supervisor's service does
  * not take the sessions down with it.
  */
+function serverRunning(): boolean {
+  try {
+    execFileSync('tmux', ['-u', 'list-sessions'], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
 function ensureTmux(name: string): void {
   if (hasSession(name)) return
   const unit = process.env.TELEGRAM_SUPERVISOR_TMUX_UNIT
   try {
-    if (unit) {
-      // Restart, not start: the oneshot unit stays active after its tmux
-      // server is gone. Never create the session here: it would live in this
-      // service and end with it.
-      log(`tmux session ${name} is missing, restarting ${unit}`)
+    // With no tmux server at all, a server started from here would live in
+    // this service and end with it: let the tmux unit start it. Restart, not
+    // start, as the oneshot unit stays active after its server is gone; its
+    // stop step has nothing to end then. A running server only needs the
+    // session: never restart the unit then, that would end its sessions.
+    if (unit && !serverRunning()) {
+      log(`no tmux server, restarting ${unit}`)
       execFileSync('systemctl', ['--user', 'restart', unit], { stdio: 'ignore', timeout: 30_000 })
       if (!hasSession(name)) log(`${unit} did not create tmux session ${name}`)
     } else {
@@ -243,14 +255,38 @@ async function routerListening(): Promise<boolean> {
   }
 }
 
+/**
+ * A supervisor that was killed (SIGKILL, out of memory) leaves its router
+ * running, which would then look like another router. Stop it: it is ours.
+ */
+async function stopOrphanRouter(): Promise<void> {
+  const pid = Number(readText(ROUTER_PID))
+  // Called only when no supervisor holds the lock, so whoever started it is gone.
+  if (!pid || !alive(pid) || !(readText(`/proc/${pid}/cmdline`) ?? '').includes('router.ts')) return
+  log(`stopping router pid ${pid} left behind by an earlier supervisor`)
+  process.kill(pid, 'SIGTERM')
+  for (let i = 0; i < 100 && alive(pid); i++) await Bun.sleep(100)
+  if (alive(pid)) process.kill(pid, 'SIGKILL')
+  rmSync(ROUTER_PID, { force: true })
+}
+
 /** Why this supervisor must not run, if another one or a router runs. */
 async function conflict(): Promise<string | undefined> {
-  const pid = Number(readText(LOCK))
-  if (pid && pid !== process.pid && alive(pid) && (readText(`/proc/${pid}/cmdline`) ?? 'supervisor').includes('supervisor')) {
-    return `another supervisor is running (pid ${pid})`
-  }
+  const other = await conflictingSupervisor()
+  if (other) return `another supervisor is running (pid ${other})`
   if (await routerListening()) return `a Telegram router is already running (${SOCKET} answers)`
   return undefined
+}
+
+/** pid of another live supervisor holding the lock. */
+async function conflictingSupervisor(): Promise<number | undefined> {
+  const pid = Number(readText(LOCK))
+  return pid && pid !== process.pid && alive(pid) && (readText(`/proc/${pid}/cmdline`) ?? 'supervisor').includes('supervisor') ? pid : undefined
+}
+
+/** The environment for the router: the supervisor's own settings stay here. */
+function routerEnv(): Record<string, string | undefined> {
+  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('TELEGRAM_SUPERVISOR_')))
 }
 
 // ---- main --------------------------------------------------------------------
@@ -270,6 +306,7 @@ async function main(): Promise<void> {
   const say = messages()
 
   mkdirSync(DIR, { recursive: true })
+  if (!(await conflictingSupervisor())) await stopOrphanRouter()
   const why = await conflict()
   if (why) {
     log(`not starting: ${why}`)
@@ -284,12 +321,12 @@ async function main(): Promise<void> {
   }
 
   let child: ReturnType<typeof Bun.spawn> | undefined
-  const quit = () => {
+  const quit = (code: number) => {
     child?.kill()
-    process.exit(0)
+    process.exit(code)
   }
-  process.on('SIGTERM', quit)
-  process.on('SIGINT', quit)
+  process.on('SIGTERM', () => quit(143))
+  process.on('SIGINT', () => quit(130))
 
   let crashes = 0 // quick failures of the current version in a row
   let bad: string | undefined // version found broken; cleared once another is installed
@@ -318,17 +355,26 @@ async function main(): Promise<void> {
       cwd: existsSync(CWD) ? CWD : homedir(),
       // The earlier version must not exit for the broken one: this loop
       // stops it once another version is installed.
-      env: { ...process.env, TELEGRAM_ROUTER_TMUX: SESSION, TELEGRAM_ROUTER_SELF_UPDATE: fallback ? '' : '1' },
+      env: { ...routerEnv(), TELEGRAM_ROUTER_TMUX: SESSION, TELEGRAM_ROUTER_SELF_UPDATE: fallback ? '' : '1' },
       stdio: ['ignore', 'inherit', 'inherit'],
     })
+    writeFileSync(ROUTER_PID, String(child.pid))
     let switched = false
     let checkedSelf = false
+    let markedGood = false
     let tmuxCheckedAt = Date.now()
     const watch = setInterval(() => {
       // The router cannot open windows without its tmux session.
       if (Date.now() - tmuxCheckedAt >= 5000) {
         tmuxCheckedAt = Date.now()
         ensureTmux(SESSION)
+      }
+      // A version that has run a while is what a broken update falls back
+      // to. Noted while it runs: a service stop or restart ends it without
+      // the exit below.
+      if (!fallback && !markedGood && Date.now() - startedAt >= QUICK_MS) {
+        markedGood = true
+        if (readText(GOOD)?.trim() !== run) writeFileSync(GOOD, run)
       }
       if (fallback) {
         const now = installedRoot(PLUGIN)
@@ -357,8 +403,6 @@ async function main(): Promise<void> {
     let pause = PAUSE_MS
     if (ran >= QUICK_MS) {
       crashes = 0
-      // Remember a version that ran a while: it is what a broken update falls back to.
-      if (!fallback && good !== run) writeFileSync(GOOD, run)
     } else if (code !== 0 && !fallback) {
       // 0 is the router exiting for an update, not a failure.
       crashes++

@@ -152,6 +152,10 @@ describe('escapeTightHashes', () => {
 })
 
 describe('narrowTables', () => {
+  test('keeps a wide table that has no rows', () => {
+    const md = `| ${'long header '.repeat(6)}| second |\n| --- | --- |`
+    expect(narrowTables(md, 50)).toBe(md)
+  })
   const wide = '| Script | What it does | Used |\n| --- | --- | --- |\n| claude-tg.sh | 守护脚本：运行路由器，退出后 5 秒重启它 | ✅ always |\n| tgctl | | no |'
   test('turns a table with long rows into a list', () => {
     expect(narrowTables(wide, 50)).toBe('- **claude-tg.sh**\n  - What it does: 守护脚本：运行路由器，退出后 5 秒重启它\n  - Used: ✅ always\n- **tgctl**\n  - Used: no')

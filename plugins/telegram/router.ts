@@ -264,6 +264,7 @@ type Restart = {
   message?: number // the status message, edited as it goes
   whenIdle?: boolean // waiting for the current reply to finish
   stopped?: boolean // the old process was told to exit
+  relaunched?: boolean // the new one was started, not connected yet
   resumed?: boolean // the new one resumes the conversation
 }
 
@@ -479,7 +480,8 @@ function sessionEnv(slot: Slot): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) {
     if (v == null) continue
-    if (k.startsWith('TELEGRAM_ROUTER_') || k === 'TELEGRAM_BOT_TOKEN') continue
+    // The router's and the service supervisor's own settings stay out of the sessions.
+    if (k.startsWith('TELEGRAM_ROUTER_') || k.startsWith('TELEGRAM_SUPERVISOR_') || k === 'TELEGRAM_BOT_TOKEN') continue
     if (k.startsWith('TELEGRAM_') || k === 'PATH' || k === 'LANG') env[k] = v
   }
   env.TELEGRAM_ROUTER_SOCKET = SOCKET
@@ -647,7 +649,7 @@ async function onHello(sock: Socket<SockData>, name: string, plugin?: string): P
     for (const u of r.queue.splice(0)) send(sock, { update: u })
     saveQueue()
   }
-  if (r.restart?.stopped) {
+  if (r.restart?.relaunched) {
     const { chat, thread, message, resumed } = r.restart
     r.restart = undefined
     const text = t(resumed ? 'routerRestarted' : 'routerRestartedFresh', { plugin: r.plugin })
@@ -724,6 +726,8 @@ function pollOwner(pollId: string): Slot | undefined {
 
 async function handleUpdate(u: any): Promise<void> {
   const msg = u.message ?? u.edited_message
+  // Commands only from new messages: editing an old one must not run it again.
+  const command: string | undefined = u.message?.text
   const cq = u.callback_query
   // Poll votes name no chat: hand them to the session that sent the poll
   // (started if needed); it checks who voted.
@@ -744,11 +748,11 @@ async function handleUpdate(u: any): Promise<void> {
   if (!chat) return
   const from = String((msg ?? cq)?.from?.id ?? '')
 
-  if (msg?.text && /^\/sessions(@\w+)?\b/.test(msg.text)) {
+  if (command && /^\/sessions(@\w+)?\b/.test(command)) {
     if (loadAccess().allowFrom.includes(from)) await reportSessions(String(chat.id), msg.message_thread_id)
     return
   }
-  if (msg?.text && /^\/restart(@\w+)?(\s|$)/.test(msg.text)) {
+  if (command && /^\/restart(@\w+)?(\s|$)/.test(command)) {
     await onRestartCommand(msg, from)
     return
   }
@@ -921,9 +925,11 @@ function controlledSlot(chat: TgChat, thread: number | undefined, from: string):
 /** Tell the old process to exit; the tick starts it again (see tick). */
 function beginRestart(slot: Slot): void {
   const r = runtime(slot.name)
-  if (!r.restart || r.stopping) return
+  if (!r.restart) return
   r.restart.whenIdle = false
   r.restart.stopped = true
+  // Already on its way out (idle stop, update): the tick starts it again.
+  if (r.stopping) return
   const pid = r.pid
   stop(slot, 'restart requested')
   // A session stuck hard enough to ignore SIGTERM is killed.
@@ -954,7 +960,8 @@ async function onRestartCommand(msg: TgMessage, from: string): Promise<void> {
     await post(chat, thread, t('routerRestartNotRunning'))
     return
   }
-  if (r.stopping || r.restart) {
+  // A question nobody answered does not block a new /restart; one under way does.
+  if (r.stopping || r.restart?.stopped || r.restart?.relaunched || r.restart?.whenIdle) {
     await post(chat, thread, t('routerRestartAlready'))
     return
   }
@@ -994,7 +1001,7 @@ async function onRestartButton(cq: TgCallback, from: string): Promise<void> {
     return
   }
   const r = runtime(slot.name)
-  if (!r.restart || r.restart.stopped || r.restart.message !== cq.message?.message_id) {
+  if (!r.restart || r.restart.stopped || r.restart.relaunched || r.restart.message !== cq.message?.message_id) {
     await answer(t('routerRestartStale'))
     return
   }
@@ -1062,11 +1069,18 @@ async function tick(): Promise<void> {
       }
     }
     if (r.restart?.stopped) {
-      // A /restart: start it again right away, wherever it runs (no wake notice).
+      // A /restart: start it again right away, wherever it runs (no wake
+      // notice). Once: if the new process fails too, the usual crash and
+      // start-timeout handling takes over.
+      r.restart.stopped = false
+      r.restart.relaunched = true
       r.restart.resumed = validSession(slot.sessionId)
       await start(slot)
       continue
     }
+    // The process a pending /restart was for is gone, or the restarted one
+    // died before connecting: forget the request.
+    if (r.restart) r.restart = undefined
     if (r.gaveUp) continue
     // Restart main always, and any slot that has messages waiting.
     if (slot.pinned || r.queue.length) await wake(slot)

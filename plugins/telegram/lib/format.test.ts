@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  chunk, clip, describeTool, expandTimes, fmtDuration, fmtElapsed, fmtTokens, mdSpaced, parseTime, plainMarkdown, renderChecklist,
+  chunk, clip, describeTool, escapeTightHashes, expandTimes, fmtDuration, fmtElapsed, fmtTokens, mdSpaced, parseTime, plainMarkdown, renderChecklist,
   renderDraft, renderStatus, safeName,
 } from './format.ts'
 import { isNewer } from './version.ts'
@@ -137,5 +137,16 @@ describe('mdSpaced', () => {
     const md = mdSpaced(['**Title**', 'one\ntwo', '**Section**', '- a'])
     expect(md).toBe('**Title**\n\n\u2800\n\none  \ntwo\n\n\u2800\n\n**Section**\n\n\u2800\n\n- a')
     expect(plainMarkdown(md)).toBe('Title\n\none\ntwo\n\nSection\n\n- a')
+  })
+})
+
+describe('escapeTightHashes', () => {
+  test('escapes # glued to text at the start of a line, list item or quote', () => {
+    expect(escapeTightHashes('- #1 merged\n#2 next\n> #3 quoted\n1. #4 done')).toBe('- \\#1 merged\n\\#2 next\n> \\#3 quoted\n1. \\#4 done')
+    expect(escapeTightHashes('##6 x')).toBe('\\##6 x')
+  })
+  test('leaves real headings, # inside a line, escaped ones and code alone', () => {
+    const md = '# Title\n## Sub\n- PR #5\n\\#7 done\n```bash\n#comment\n```\n~~~\n#x\n~~~'
+    expect(escapeTightHashes(md)).toBe(md)
   })
 })

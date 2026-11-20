@@ -22,7 +22,7 @@ import { homedir } from 'node:os'
 import { execFile, execFileSync } from 'node:child_process'
 import { dirname, join, extname } from 'node:path'
 import {
-  chunk, clip, expandTimes, fmtDuration, fmtTokens, mdList, mdSpaced, plainMarkdown, renderChecklist, renderDraft, renderStatus, safeName,
+  chunk, clip, escapeTightHashes, expandTimes, fmtDuration, fmtTokens, mdList, mdSpaced, plainMarkdown, renderChecklist, renderDraft, renderStatus, safeName,
   type Step,
 } from './lib/format.ts'
 import { scanTranscriptTail } from './lib/transcript.ts'
@@ -564,7 +564,7 @@ async function showProgress(chat: string, title: string | undefined, steps: Step
     const body = expandTimes(renderChecklist(title, steps, started, cur.rich, t), cur.rich ? 'rich' : 'text')
     try {
       if (cur.rich) {
-        await (bot.api.raw as any).editMessageText({ chat_id: chat, message_id: cur.id, rich_message: { markdown: body } })
+        await (bot.api.raw as any).editMessageText({ chat_id: chat, message_id: cur.id, rich_message: { markdown: escapeTightHashes(body) } })
       } else {
         await bot.api.editMessageText(chat, cur.id, body)
       }
@@ -596,7 +596,7 @@ async function sendRich(chat_id: string, markdown: string, replyTo?: number, eff
   const send = (fx?: string) =>
     (bot.api.raw as any).sendRichMessage({
       chat_id,
-      rich_message: { markdown },
+      rich_message: { markdown: escapeTightHashes(markdown) },
       ...(replyTo != null ? { reply_parameters: { message_id: replyTo } } : {}),
       ...(fx ? { message_effect_id: fx } : {}),
     })
@@ -610,7 +610,7 @@ async function sendRich(chat_id: string, markdown: string, replyTo?: number, eff
  */
 async function sayRich(chat_id: string, markdown: string, reply_markup?: InlineKeyboard): Promise<void> {
   try {
-    await (bot.api.raw as any).sendRichMessage({ chat_id, rich_message: { markdown }, ...(reply_markup ? { reply_markup } : {}) })
+    await (bot.api.raw as any).sendRichMessage({ chat_id, rich_message: { markdown: escapeTightHashes(markdown) }, ...(reply_markup ? { reply_markup } : {}) })
   } catch (err) {
     log.debug('rich message rejected, sending plain text', err)
     await bot.api.sendMessage(chat_id, plainMarkdown(markdown), reply_markup ? { reply_markup } : {}).catch(e => log.warn('send failed', e))
@@ -773,7 +773,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const edited = await (bot.api.raw as any).editMessageText({
             chat_id: args.chat_id as string,
             message_id: Number(args.message_id),
-            rich_message: { markdown: expandTimes(args.text as string, 'rich') },
+            rich_message: { markdown: escapeTightHashes(expandTimes(args.text as string, 'rich')) },
           })
           const id = typeof edited === 'object' ? edited.message_id : args.message_id
           return { content: [{ type: 'text', text: `edited (id: ${id})` }] }

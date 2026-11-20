@@ -61,6 +61,30 @@ export function expandTimes(text: string, mode: 'text' | 'markdownv2' | 'rich'):
   })
 }
 
+/**
+ * Telegram's rich Markdown makes a heading of `#` followed directly by text
+ * ("#1 merged") at the start of a line, list item or quote, unlike GitHub,
+ * which needs a space after it. Escape that `#` so it stays text. Real
+ * headings ("# Title") and fenced code blocks are left alone.
+ */
+export function escapeTightHashes(md: string): string {
+  let fence: string | undefined
+  return md
+    .split('\n')
+    .map(line => {
+      const f = /^\s*(`{3,}|~{3,})/.exec(line)
+      if (f) {
+        const ch = f[1]![0]!
+        if (!fence) fence = ch
+        else if (ch === fence) fence = undefined
+        return line
+      }
+      if (fence) return line
+      return line.replace(/^(\s*(?:(?:[-*+]|\d+[.)])\s+|>\s?)*)(#+)(?=[^\s#\\])/, '$1\\$2')
+    })
+    .join('\n')
+}
+
 export type Step = { text: string; state: 'todo' | 'doing' | 'done' | 'failed' | 'skipped' }
 
 export function renderChecklist(title: string | undefined, steps: Step[], started: number, rich: boolean, t: T = tEn): string {

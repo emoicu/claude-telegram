@@ -90,6 +90,13 @@ describe('tools', () => {
     expect(call.body.rich_message.markdown).toContain('## Title')
   })
 
+  test('a rich reply keeps "#1" at the start of a list item as text', async () => {
+    await boot(allowlist)
+    await ch.tool('reply', { chat_id: String(OWNER), text: '**PRs**\n- #1 merged\n# Real heading', format: 'rich' })
+    const call = await tg.waitFor(c => c.method === 'sendRichMessage' && /PRs/.test(textOf(c)), 'rich reply')
+    expect(textOf(call)).toBe('**PRs**\n- \\#1 merged\n# Real heading')
+  })
+
   test('reply refuses chats that are not allowlisted', async () => {
     await boot(allowlist)
     await expect(ch.tool('reply', { chat_id: String(STRANGER), text: 'leak' })).rejects.toThrow(/not allowlisted/)

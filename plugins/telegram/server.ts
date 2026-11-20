@@ -32,6 +32,7 @@ import {
   saveScheduled, scheduleDir, scheduledSender,
 } from './lib/schedule.ts'
 import { envDuration, Holds } from './lib/holds.ts'
+import { addPoll, describeAnswer, MAX_POLL_OPTIONS, type PollRecord } from './lib/polls.ts'
 import { bare, DEFAULT_LABELS, mergeShortcuts, PAUSE_REACTION, QUICK_FIRST, type Shortcut } from './lib/shortcuts.ts'
 import { type Key, LANGUAGES, languageFile, normalizeLang, translate } from './lib/i18n.ts'
 import {type GateResult, isAllowedChat, isMentionedIn, 
@@ -323,6 +324,21 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'choose',
+      description:
+        'Ask the user to pick from a list with a native Telegram poll: they tick options and tap Vote. Use it when they should choose which of several items to do, keep or drop (multiple answers by default), or one option (multiple: false). Their vote arrives later as a channel message "[Poll answer on your message N]" listing what they picked; they can withdraw and vote again, so act on the newest vote. Keep options short (up to 100 characters, 2 to 12 of them).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string' },
+          question: { type: 'string', description: 'The question, up to 300 characters, e.g. "Which of these should I do next?"' },
+          options: { type: 'array', items: { type: 'string' }, description: '2 to 12 options, each up to 100 characters.' },
+          multiple: { type: 'boolean', description: 'Allow several answers (default true).' },
+        },
+        required: ['chat_id', 'question', 'options'],
+      },
+    },
+    {
       name: 'schedule',
       description:
         'Schedule a message to the chat for later: reminders ("remind me at 8 tomorrow to renew the VPS"), or a daily / weekly note. The plugin sends it on time by itself, even if this session has stopped; it costs no Claude usage and Claude is not woken when it is sent. Text is GitHub-flavored Markdown like rich replies, {{time:…}} tokens work. Write the reminder itself, e.g. "⏰ Renew the VPS".',
@@ -530,6 +546,26 @@ const findSent = (chat: string, id: number) => loadSent().find(r => r.chat === c
 // or w?[dD]?[tT]? (weekday, short/long date, short/long time). Default: t
 // within 20 hours of now, dt otherwise. Plain text gets a UTC time instead.
 
+
+// LOCAL PATCH: choice polls (the choose tool, lib/polls.ts). Polls this
+// session sent, so a vote (which names no chat) can be matched and routed.
+const POLLS_FILE = join(STATE_DIR, `polls${SLOT === 'main' ? '' : `-${SLOT}`}.json`)
+
+function loadPolls(): Record<string, PollRecord> {
+  try {
+    return JSON.parse(readFileSync(POLLS_FILE, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function savePolls(all: Record<string, PollRecord>): void {
+  try {
+    writeFileSync(POLLS_FILE, JSON.stringify(all), { mode: 0o600 })
+  } catch (err) {
+    ignored('save polls', err)
+  }
+}
 
 // LOCAL PATCH: progress checklists. One message per chat, edited in place.
 // Remembered on disk so a restarted session keeps editing the same message.
@@ -799,6 +835,26 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }))
         const result = await showProgress(chat_id, args.title as string | undefined, steps, args.new === true)
         return { content: [{ type: 'text', text: result }] }
+      }
+      case 'choose': {
+        const chat_id = args.chat_id as string
+        assertAllowedChat(chat_id)
+        const question = String(args.question ?? '').trim()
+        const options = ((args.options as unknown[] | undefined) ?? []).map(o => String(o ?? '').trim()).filter(Boolean)
+        if (!question) throw new Error('choose needs a question')
+        if (question.length > 300) throw new Error('question is longer than 300 characters')
+        if (options.length < 2 || options.length > MAX_POLL_OPTIONS) throw new Error(`choose needs 2 to ${MAX_POLL_OPTIONS} options`)
+        const long = options.find(o => o.length > 100)
+        if (long) throw new Error(`option longer than 100 characters: "${long.slice(0, 40)}…"`)
+        const multiple = args.multiple !== false
+        const sent = await bot.api.sendPoll(chat_id, question, options.map(text => ({ text })), {
+          is_anonymous: false,
+          allows_multiple_answers: multiple,
+        })
+        if (!sent.poll) throw new Error('Telegram did not return the poll')
+        savePolls(addPoll(loadPolls(), sent.poll.id, { chat: chat_id, id: sent.message_id, question, options, multiple, at: Date.now() }))
+        noteStatusChat(chat_id)
+        return { content: [{ type: 'text', text: `sent poll (id: ${sent.message_id}); the vote arrives as a channel message when the user answers` }] }
       }
       case 'schedule': {
         const chat_id = args.chat_id as string
@@ -1932,6 +1988,35 @@ if (STATUS_ENABLED) {
   }, STATUS_POLL_MS).unref()
 }
 
+// LOCAL PATCH: votes on choice polls (see the choose tool).
+bot.on('poll_answer', async ctx => {
+  const a = ctx.pollAnswer
+  const rec = loadPolls()[a.poll_id]
+  const voter = a.user ? String(a.user.id) : undefined
+  if (!rec || !voter) return
+  const access = loadAccess()
+  const allowed = isPrivateChat(rec.chat)
+    ? access.allowFrom.includes(voter)
+    : (access.groups[rec.chat]?.allowFrom?.length ? access.groups[rec.chat]!.allowFrom! : access.allowFrom).includes(voter)
+  if (!allowed) return
+  noteStatusChat(rec.chat)
+  void mcp.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      content: describeAnswer(rec, a.option_ids),
+      meta: {
+        chat_id: rec.chat,
+        message_id: String(rec.id),
+        user: a.user?.username ?? voter,
+        user_id: voter,
+        ts: new Date().toISOString(),
+      },
+    },
+  }).catch(err => {
+    log.warn('failed to deliver poll answer to Claude', err)
+  })
+})
+
 // LOCAL PATCH: reaction shortcuts (see lib/shortcuts.ts).
 bot.on('message_reaction', async ctx => {
   const r = ctx.messageReaction
@@ -2033,7 +2118,7 @@ if (channelMode.poll && !routed) void (async () => {
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.start({
-        allowed_updates: ['message', 'edited_message', 'callback_query', 'message_reaction', 'stopped_message_generation'] as any,
+        allowed_updates: ['message', 'edited_message', 'callback_query', 'message_reaction', 'stopped_message_generation', 'poll_answer'] as any,
         onStart: info => {
           attempt = 0
           botUsername = info.username

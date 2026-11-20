@@ -76,6 +76,7 @@ Quick reference: IDs are **numeric user IDs** (get yours from [@userinfobot](htt
 | `reply` | Send to a chat. Takes `chat_id` + `text`, optionally `reply_to` (message ID) for native threading and `files` (absolute paths) for attachments. Images (`.jpg`/`.png`/`.gif`/`.webp`) send as photos with inline preview; other types send as documents. Max 50MB each. Auto-chunks text; files send as separate messages after the text. Returns the sent message ID(s). |
 | `react` | Add an emoji reaction to a message by ID. **Only Telegram's fixed whitelist** is accepted (👍 👎 ❤ 🔥 👀 etc). |
 | `edit_message` | Edit a message the bot previously sent. Useful for "working…" → result progress updates. Only works on the bot's own messages. |
+| `choose` | Ask the user to pick from 2–12 options with a native Telegram poll (several answers by default). The vote comes back as a channel message; a withdrawn vote too. |
 
 Inbound messages trigger a typing indicator automatically — Telegram shows
 "botname is typing…" while the assistant works on a response.

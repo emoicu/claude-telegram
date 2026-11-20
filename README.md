@@ -5,7 +5,7 @@
 **Drive Claude Code from Telegram: chat with your sessions, watch them work, and steer them from your phone.**
 
 [![test](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml)
-[![version](https://img.shields.io/badge/version-1.3.2-blue)](plugins/telegram/.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-1.4.0-blue)](plugins/telegram/.claude-plugin/plugin.json)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-channel%20plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
@@ -30,6 +30,7 @@ A personally maintained fork of the official [Claude Code Telegram channel plugi
 - Reactions on your message track it: 👀 received → ✍ working → 👍 done
 - For longer turns, a status line (elapsed time · step · current action) with a **Stop** button
 - Progress checklists that update in place instead of flooding the chat, with a 🎉 effect when done
+- Choice lists as native Telegram polls: tick what you want, tap Vote, and Claude gets your picks
 
 **🕹️ Control from your phone**
 - `AskUserQuestion` prompts arrive as buttons; permission prompts as **Allow / Deny**, plus **Always allow** to stop asking for the same kind of call in this conversation

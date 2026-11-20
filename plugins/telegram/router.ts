@@ -32,7 +32,7 @@
  *                               supervisor loop that restarts the router from the newest copy
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, loadavg } from 'node:os'
 import { basename, join } from 'node:path'
 import type { Socket } from 'bun'
@@ -41,6 +41,7 @@ import { mdList, mdSpaced, plainMarkdown } from './lib/format.ts'
 import { type Key, translator } from './lib/i18n.ts'
 import { retryDelayMs } from './lib/retry.ts'
 import { deliverDue, scheduleDir, scheduledSender } from './lib/schedule.ts'
+import { pollFileSlot } from './lib/polls.ts'
 import { isNewer } from './lib/version.ts'
 
 // ---- config ---------------------------------------------------------------
@@ -669,9 +670,36 @@ Bun.listen<SockData>({
 /** Messages Claude should see; service messages (topic created…) are not. */
 const ACTIONABLE = ['text', 'photo', 'document', 'voice', 'audio', 'video', 'video_note', 'sticker']
 
+/** The slot that sent a poll, from the polls files the sessions keep. */
+function pollOwner(pollId: string): Slot | undefined {
+  let files: string[] = []
+  try {
+    files = readdirSync(STATE_DIR)
+  } catch {
+    return undefined
+  }
+  for (const f of files) {
+    const name = pollFileSlot(f)
+    if (!name) continue
+    try {
+      if (pollId in JSON.parse(readFileSync(join(STATE_DIR, f), 'utf8'))) return slots.get(name)
+    } catch {
+      // unreadable or half-written: try the others
+    }
+  }
+  return undefined
+}
+
 async function handleUpdate(u: any): Promise<void> {
   const msg = u.message ?? u.edited_message
   const cq = u.callback_query
+  // Poll votes name no chat: hand them to the session that sent the poll
+  // (started if needed); it checks who voted.
+  if (u.poll_answer) {
+    const owner = pollOwner(String(u.poll_answer.poll_id))
+    if (owner) deliver(owner, u)
+    return
+  }
   // Reactions carry no topic: offer them to every running session of that
   // group; each one ignores reactions on messages it did not send.
   if (u.message_reaction) {
@@ -1072,7 +1100,7 @@ process.on('SIGINT', () => process.exit(0))
       const updates: any[] = await api('getUpdates', {
         offset,
         timeout: 30,
-        allowed_updates: ['message', 'edited_message', 'callback_query', 'message_reaction', 'stopped_message_generation'],
+        allowed_updates: ['message', 'edited_message', 'callback_query', 'message_reaction', 'stopped_message_generation', 'poll_answer'],
       })
       attempt = 0
       for (const u of updates) {

@@ -252,6 +252,44 @@ describe('reaction shortcuts', () => {
   })
 })
 
+describe('choose (polls)', () => {
+  const vote = (pollId: string, user: number, option_ids: number[]) =>
+    tg.push({ poll_answer: { poll_id: pollId, user: { id: user, is_bot: false, first_name: `U${user}` }, option_ids } })
+  const ask = async () => {
+    expect(await ch.tool('choose', { chat_id: String(OWNER), question: 'Which next?', options: ['Retry fix', 'Checklist', 'Status'] })).toMatch(/sent poll/)
+    const call = await tg.waitFor(c => c.method === 'sendPoll', 'poll')
+    expect(call.body.is_anonymous).toBe(false)
+    expect(call.body.allows_multiple_answers).toBe(true)
+    return call.result.poll.id as string
+  }
+
+  test('a vote reaches Claude with what was picked', async () => {
+    await boot(allowlist)
+    const pollId = await ask()
+    vote(pollId, OWNER, [0, 2])
+    const n = await ch.waitNotification('notifications/claude/channel', p => /Poll answer/.test(p.content))
+    expect(n.content).toContain('Picked: "Retry fix", "Status"')
+    expect(n.content).toContain('Not picked: "Checklist"')
+    expect(n.meta.chat_id).toBe(String(OWNER))
+  })
+
+  test('a withdrawn vote is reported, a stranger is ignored', async () => {
+    await boot(allowlist)
+    const pollId = await ask()
+    vote(pollId, STRANGER, [1])
+    vote(pollId, OWNER, [])
+    const n = await ch.waitNotification('notifications/claude/channel', p => /Poll/.test(p.content))
+    expect(n.content).toContain('withdrew their vote')
+    await Bun.sleep(200)
+    expect(ch.notifications.filter(x => /Poll answer/.test(x.params?.content ?? ''))).toHaveLength(0)
+  })
+
+  test('rejects too few options', async () => {
+    await boot(allowlist)
+    await expect(ch.tool('choose', { chat_id: String(OWNER), question: 'Q?', options: ['only'] })).rejects.toThrow(/2 to 12/)
+  })
+})
+
 describe('progress', () => {
   test('todo-list style status fields are understood', async () => {
     await boot(allowlist)

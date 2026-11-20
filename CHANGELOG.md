@@ -2,6 +2,12 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.4.0] - 2026-11-20
+
+### Added
+
+- **`choose` tool**: Claude asks the user to pick from 2 to 12 options with a native Telegram poll (several answers by default, `multiple: false` for one). The vote reaches Claude as a channel message listing what was picked and what was not; withdrawing the vote is reported too. Works in direct messages and forum topics: each session keeps the polls it sent in `polls[-<slot>].json`, and the router hands a vote to the session that sent the poll, starting it if needed. Logic in `lib/polls.ts`.
+
 ## [1.3.2] - 2026-11-20
 
 ### Fixed
@@ -90,6 +96,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.4.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.0
 [1.3.2]: https://github.com/emoicu/claude-telegram/releases/tag/v1.3.2
 [1.3.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.3.1
 [1.3.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.3.0

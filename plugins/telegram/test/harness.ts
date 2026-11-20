@@ -141,6 +141,25 @@ export class FakeTelegram {
           from: BOT,
           text: body.text ?? body.rich_message?.markdown ?? '',
         }
+      case 'sendPoll': {
+        const options = typeof body.options === 'string' ? JSON.parse(body.options) : (body.options ?? [])
+        return {
+          message_id: this.nextMessage++,
+          date: Math.floor(Date.now() / 1000),
+          chat: { id: Number(body.chat_id), type: 'private' },
+          from: BOT,
+          poll: {
+            id: `poll${this.nextMessage}`,
+            question: body.question,
+            options: options.map((o: { text: string }) => ({ text: o.text, voter_count: 0 })),
+            total_voter_count: 0,
+            is_closed: false,
+            is_anonymous: false,
+            type: 'regular',
+            allows_multiple_answers: Boolean(body.allows_multiple_answers),
+          },
+        }
+      }
       case 'sendMediaGroup': {
         const media = typeof body.media === 'string' ? JSON.parse(body.media) : (body.media ?? [])
         return media.map(() => ({

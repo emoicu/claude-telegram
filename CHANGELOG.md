@@ -2,6 +2,13 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.5.0] - 2026-11-20
+
+### Added
+
+- `/restart` (router mode) restarts the session of the chat or topic it is sent in and resumes its conversation, e.g. to load a plugin update right away or to unstick a session. An idle session restarts at once; while Claude is replying, buttons offer to wait for the reply to finish or to stop it now. The status message is edited to say when the session is back and which plugin version it runs. A session that ignores SIGTERM is killed after 15 seconds. Only allowlisted users can use it.
+- End-to-end tests for the router (`test/router.e2e.test.ts`): a fake Bot API, a private tmux server and a stand-in for Claude Code. Skipped where tmux is not installed.
+
 ## [1.4.3] - 2026-11-20
 
 ### Changed
@@ -114,6 +121,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.5.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.5.0
 [1.4.3]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.3
 [1.4.2]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.2
 [1.4.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.1

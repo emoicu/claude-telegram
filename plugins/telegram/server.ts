@@ -996,7 +996,7 @@ function helpText(): string {
     t('helpCmdDoctor'),
     t('helpCmdLanguage'),
     ...(COMMAND_HELPER ? [t('helpCmdNew'), t('helpCmdUsage'), t('helpCmdModel'), t('helpCmdEffort')] : []),
-    ...(routed ? [t('helpCmdSessions')] : []),
+    ...(routed ? [t('helpCmdSessions'), t('helpCmdRestart')] : []),
     t('helpCmdStatus'),
   ]
   if (routed) out.push('', t('helpTopicsTitle'), t('helpTopics1'), t('helpTopics2'), t('helpTopics3'), t('helpTopics4'))
@@ -1198,8 +1198,8 @@ function registerCommands(): void {
     { command: 'doctor', description: t('cmdDoctor') },
     ...(topic ? [] : [{ command: 'language', description: t('cmdLanguage') }]),
     ...(COMMAND_HELPER ? HELPER_COMMANDS.map(c => ({ command: c.command, description: t(c.key) })) : []),
-    // The router answers /sessions itself; without it the command does nothing.
-    ...(routed ? [{ command: 'sessions', description: t('cmdSessions') }] : []),
+    // The router answers /sessions and /restart itself; without it they do nothing.
+    ...(routed ? [{ command: 'sessions', description: t('cmdSessions') }, { command: 'restart', description: t('cmdRestart') }] : []),
   ]
   const scope = topic ? { type: 'chat' as const, chat_id: TOPIC_CHAT! } : { type: 'all_private_chats' as const }
   void bot.api.setMyCommands(commands, { scope }).catch(err => log.warn('setMyCommands failed', err))

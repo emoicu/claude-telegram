@@ -239,6 +239,17 @@ type Runtime = {
   queue: unknown[]
   startNotice?: { chat: string; id: number }
   queuedNotice?: boolean
+  restart?: Restart // a /restart in progress
+}
+
+/** A /restart: where to report, and how far it got. */
+type Restart = {
+  chat: string
+  thread?: number
+  message?: number // the status message, edited as it goes
+  whenIdle?: boolean // waiting for the current reply to finish
+  stopped?: boolean // the old process was told to exit
+  resumed?: boolean // the new one resumes the conversation
 }
 
 type SockData = { slot?: string; out: string }
@@ -618,6 +629,13 @@ async function onHello(sock: Socket<SockData>, name: string, plugin?: string): P
     for (const u of r.queue.splice(0)) send(sock, { update: u })
     saveQueue()
   }
+  if (r.restart?.stopped) {
+    const { chat, thread, message, resumed } = r.restart
+    r.restart = undefined
+    const text = t(resumed ? 'routerRestarted' : 'routerRestartedFresh', { plugin: r.plugin })
+    if (message) await api('editMessageText', { chat_id: chat, message_id: message, text }).catch(() => post(chat, thread, text))
+    else await post(chat, thread, text)
+  }
   if (r.startNotice) {
     const { chat, id } = r.startNotice
     r.startNotice = undefined
@@ -710,6 +728,14 @@ async function handleUpdate(u: any): Promise<void> {
 
   if (msg?.text && /^\/sessions(@\w+)?\b/.test(msg.text)) {
     if (loadAccess().allowFrom.includes(from)) await reportSessions(String(chat.id), msg.message_thread_id)
+    return
+  }
+  if (msg?.text && /^\/restart(@\w+)?(\s|$)/.test(msg.text)) {
+    await onRestartCommand(msg, from)
+    return
+  }
+  if (typeof cq?.data === 'string' && cq.data.startsWith('restart:')) {
+    await onRestartButton(cq, from)
     return
   }
 
@@ -847,6 +873,121 @@ async function reportSessions(chatId: string, thread?: number): Promise<void> {
   )
 }
 
+// ---- /restart --------------------------------------------------------------
+
+/** A message from the bot into a chat or topic; its id, if it went out. */
+async function post(chat: string, thread: number | undefined, text: string, extra: Record<string, unknown> = {}): Promise<number | undefined> {
+  try {
+    const sent = await api('sendMessage', { chat_id: chat, text, ...(thread ? { message_thread_id: thread } : {}), ...extra })
+    return sent.message_id
+  } catch (err) {
+    log(`post to ${chat} failed: ${err}`)
+    return undefined
+  }
+}
+
+// The parts of Bot API objects /restart reads.
+type TgChat = { id: number | string; type: string; is_forum?: boolean }
+type TgMessage = { message_id: number; chat: TgChat; is_topic_message?: boolean; message_thread_id?: number }
+type TgCallback = { id: string; data?: string; message?: TgMessage }
+
+/** The session a chat talks to, if this user may control it (null: ignore them). */
+function controlledSlot(chat: TgChat, thread: number | undefined, from: string): Slot | null | undefined {
+  const chatId = String(chat.id)
+  if (chat.type === 'private') return loadAccess().allowFrom.includes(from) ? slots.get('main') : null
+  if (!allowedInGroup(chatId, from)) return null
+  if (!chat.is_forum) return slots.get('main')
+  return thread ? [...slots.values()].find(s => s.chat === chatId && s.thread === thread) : null
+}
+
+/** Tell the old process to exit; the tick starts it again (see tick). */
+function beginRestart(slot: Slot): void {
+  const r = runtime(slot.name)
+  if (!r.restart || r.stopping) return
+  r.restart.whenIdle = false
+  r.restart.stopped = true
+  const pid = r.pid
+  stop(slot, 'restart requested')
+  // A session stuck hard enough to ignore SIGTERM is killed.
+  setTimeout(() => {
+    if (pid && r.pid === pid && alive(pid)) {
+      log(`${slot.name}: pid ${pid} ignored SIGTERM, killing it`)
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch (err) {
+        ignored(`kill ${slot.name}`, err)
+      }
+    }
+  }, 15_000)
+}
+
+/**
+ * /restart: restart the session of this chat (or topic) and resume its
+ * conversation. Idle: right away. Busy: ask whether to wait for the reply to
+ * finish or to stop it now.
+ */
+async function onRestartCommand(msg: TgMessage, from: string): Promise<void> {
+  const thread: number | undefined = msg.is_topic_message ? msg.message_thread_id : undefined
+  const chat = String(msg.chat.id)
+  const slot = controlledSlot(msg.chat, thread, from)
+  if (slot === null) return
+  const r = slot ? runtime(slot.name) : undefined
+  if (!slot || !r || !alive(r.pid)) {
+    await post(chat, thread, t('routerRestartNotRunning'))
+    return
+  }
+  if (r.stopping || r.restart) {
+    await post(chat, thread, t('routerRestartAlready'))
+    return
+  }
+  // Fresher than the last tick: the conversation to resume, and whether it is busy.
+  const info = sessionFile(r.pid!)
+  if (info?.sessionId && info.sessionId !== slot.sessionId) {
+    slot.sessionId = info.sessionId
+    dirty = true
+  }
+  r.status = info?.status ?? r.status
+  log(`${slot.name}: /restart from ${from} (session ${r.status ?? 'starting'})`)
+  if (r.status === 'idle' || !r.connected) {
+    r.restart = { chat, thread }
+    r.restart.message = await post(chat, thread, t('routerRestarting'))
+    beginRestart(slot)
+    return
+  }
+  r.restart = { chat, thread }
+  r.restart.message = await post(chat, thread, t('routerRestartBusy'), {
+    reply_markup: {
+      inline_keyboard: [[
+        { text: t('routerRestartWhenDone'), callback_data: `restart:wait:${slot.name}` },
+        { text: t('routerRestartNow'), callback_data: `restart:now:${slot.name}` },
+      ]],
+    },
+  })
+}
+
+async function onRestartButton(cq: TgCallback, from: string): Promise<void> {
+  const [, choice, name] = String(cq.data).split(':')
+  const slot = name ? slots.get(name) : undefined
+  const chat = cq.message?.chat
+  const thread: number | undefined = cq.message?.is_topic_message ? cq.message.message_thread_id : undefined
+  const answer = (text?: string) => api('answerCallbackQuery', { callback_query_id: cq.id, ...(text ? { text } : {}) }).catch(() => {})
+  if (!slot || !chat || controlledSlot(chat, thread, from) !== slot) {
+    await answer()
+    return
+  }
+  const r = runtime(slot.name)
+  if (!r.restart || r.restart.stopped || r.restart.message !== cq.message?.message_id) {
+    await answer(t('routerRestartStale'))
+    return
+  }
+  await answer()
+  const now = choice === 'now' || r.status === 'idle'
+  const text = t(now ? 'routerRestarting' : 'routerRestartWaiting')
+  await api('editMessageText', { chat_id: String(chat.id), message_id: r.restart.message, text }).catch(() => {})
+  if (now) beginRestart(slot)
+  else r.restart.whenIdle = true
+}
+
 // ---- supervision loop -----------------------------------------------------
 
 async function tick(): Promise<void> {
@@ -866,6 +1007,7 @@ async function tick(): Promise<void> {
       r.version = (info as { version?: string } | undefined)?.version ?? r.version
       if (r.status && r.status !== 'idle') slot.lastActive = Date.now()
       confirmDialog(slot, r)
+      if (r.restart?.whenIdle && r.status === 'idle' && !r.stopping) beginRestart(slot)
       if (!r.connected && !r.stopping && Date.now() - r.startedAt > START_TIMEOUT_MS) await startTimedOut(slot, r)
       if (!slot.pinned && r.status === 'idle' && !r.queue.length && Date.now() - slot.lastActive > IDLE_MS && !r.stopping) {
         stop(slot, `idle for ${Math.round((Date.now() - slot.lastActive) / 60_000)} min`)
@@ -900,6 +1042,12 @@ async function tick(): Promise<void> {
           }
         }
       }
+    }
+    if (r.restart?.stopped) {
+      // A /restart: start it again right away, wherever it runs (no wake notice).
+      r.restart.resumed = validSession(slot.sessionId)
+      await start(slot)
+      continue
     }
     if (r.gaveUp) continue
     // Restart main always, and any slot that has messages waiting.

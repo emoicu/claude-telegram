@@ -87,6 +87,9 @@ const QUICK_EXIT_MS = 60_000 // a session that dies sooner than this "crashed qu
 const MAX_QUICK_EXITS = 3 // then stop restarting it and tell the user
 const DIALOG_WINDOW_MS = 120_000 // look for the development-channels dialog this long
 const START_TIMEOUT_MS = 120_000 // a session that has not connected by then is stuck
+const START_RETRY_MAX_MS = 5 * 60_000 // longest wait between attempts to open a session's tmux window
+const START_FAILURES_TOLD = 3 // then stop trying to open a session's window and tell its chat
+const MAX_SOCKET_LINE = 16 * 1024 * 1024 // a session's line longer than this is dropped
 const UPDATE_CHECK_MS = 30_000 // how often to look for a newer plugin or Claude Code on disk
 const VERSION_RUN_MS = 10 * 60_000 // how often to run `claude --version` when its path does not tell
 const UPDATE_IDLE_MS = 5 * 60_000 // restart an outdated session only after this much quiet
@@ -261,6 +264,9 @@ type Runtime = {
   startNotice?: { chat: string; id: number }
   queuedNotice?: boolean
   restart?: Restart // a /restart in progress
+  makingRoom?: boolean // stopped to free room for another session, not gone yet
+  startFailures?: number // tmux could not open its window this many times in a row
+  retryStartAt?: number // after such a failure, do not try again before this
 }
 
 /** A /restart: where to report, and how far it got. */
@@ -274,7 +280,9 @@ type Restart = {
   resumed?: boolean // the new one resumes the conversation
 }
 
-type SockData = { slot?: string; out: string }
+/** Per connection: the slot it said it is, output not written yet (bytes:
+ *  sock.write() counts bytes), and a partial input line. */
+type SockData = { slot?: string; out: Uint8Array[]; in: string; decoder: TextDecoder }
 
 const slots = new Map<string, Slot>()
 const rt = new Map<string, Runtime>()
@@ -320,10 +328,26 @@ function saveSlots(): void {
   renameSync(tmp, SLOTS_FILE)
 }
 
+/** The slot of a forum topic. Topic numbers are per group, so a slot is
+ *  found by group and topic, never by its name alone. */
+function findTopicSlot(chat: string, thread: number): Slot | undefined {
+  for (const s of slots.values()) if (s.chat === chat && s.thread === thread) return s
+  return undefined
+}
+
+/** A free name for a new topic slot: "t<thread>" as older routers named
+ *  them, or with the group's last digits when another group has that topic. */
+function topicSlotName(chat: string, thread: number): string {
+  const base = `t${thread}`
+  const digits = chat.replace(/\D/g, '')
+  for (const name of [base, `${base}-${digits.slice(-4)}`, `${base}-${digits}`]) if (!slots.has(name)) return name
+  for (let i = 2; ; i++) if (!slots.has(`${base}-${digits}-${i}`)) return `${base}-${digits}-${i}`
+}
+
 function topicSlot(chat: string, thread: number, title?: string): Slot {
-  const name = `t${thread}`
-  let s = slots.get(name)
+  let s = findTopicSlot(chat, thread)
   if (!s) {
+    const name = topicSlotName(chat, thread)
     s = { name, chat, thread, cwd: cwdFor(title), title, lastActive: Date.now() }
     slots.set(name, s)
     dirty = true
@@ -543,9 +567,20 @@ async function start(slot: Slot): Promise<void> {
     const id = tmux(...args).trim()
     tmux('set-option', '-w', '-t', id, '@slot', slot.name)
   } catch (err) {
-    log(`${slot.name}: tmux new-window failed: ${err}`)
+    // Back off instead of trying (and announcing it) at every tick.
+    const failures = (r.startFailures ?? 0) + 1
+    const delay = Math.min(TICK_MS * 2 ** (failures - 1), START_RETRY_MAX_MS)
+    Object.assign(r, { startFailures: failures, retryStartAt: Date.now() + delay })
+    log(`${slot.name}: tmux new-window failed (${failures} in a row, next try in ${Math.round(delay / 1000)}s): ${err}`)
+    if (failures >= START_FAILURES_TOLD) {
+      // Tell the chat once and stop trying until someone writes to it again.
+      r.gaveUp = true
+      await notify(slot, t('routerStartFailed'))
+    }
     return
   }
+  r.startFailures = undefined
+  r.retryStartAt = undefined
   const pid = windowPid(slot.name)
   Object.assign(r, { pid, startedAt: Date.now(), stopping: false, dialogDone: false, status: undefined, queuedNotice: false, connected: false, resumedConversation: resume.length > 0 })
   slot.lastActive = Date.now()
@@ -587,15 +622,26 @@ function confirmDialog(slot: Slot, r: Runtime): void {
 
 // ---- delivery -------------------------------------------------------------
 
+const encoder = new TextEncoder()
+
 function send(sock: Socket<SockData>, obj: unknown): void {
-  sock.data.out += `${JSON.stringify(obj)}\n`
+  sock.data.out.push(encoder.encode(`${JSON.stringify(obj)}\n`))
   flush(sock)
 }
 
+/** Write what the socket takes; the rest waits for drain. */
 function flush(sock: Socket<SockData>): void {
-  if (!sock.data.out) return
-  const n = sock.write(sock.data.out)
-  sock.data.out = n > 0 ? sock.data.out.slice(n) : sock.data.out
+  const out = sock.data.out
+  while (out.length) {
+    const head = out[0]!
+    const n = sock.write(head)
+    if (n >= head.length) {
+      out.shift()
+      continue
+    }
+    if (n > 0) out[0] = head.subarray(n)
+    return
+  }
 }
 
 /** Updates waiting for a session survive a router restart. */
@@ -632,7 +678,9 @@ function deliver(slot: Slot, update: unknown): void {
   const chat = (update as { message?: { chat?: { id?: number; type?: string } } }).message?.chat
   if (chat?.type === 'private' && chat.id != null) slot.lastChat = String(chat.id)
   dirty = true
-  if (r.sock) send(r.sock, { update })
+  // A session on its way out (/restart, idle stop, update) would take the
+  // update with it: keep it for the next process, started once this one exits.
+  if (r.sock && !r.stopping) send(r.sock, { update })
   else {
     r.queue.push(update)
     saveQueue()
@@ -748,11 +796,17 @@ Bun.listen<SockData>({
   })(),
   socket: {
     open(sock) {
-      sock.data = { out: '' }
+      sock.data = { out: [], in: '', decoder: new TextDecoder() }
     },
     data(sock, chunk) {
-      const text = chunk.toString()
-      for (const line of text.split('\n')) {
+      // Lines can arrive in pieces, split anywhere (even inside a character).
+      const lines = (sock.data.in + sock.data.decoder.decode(chunk, { stream: true })).split('\n')
+      sock.data.in = lines.pop() ?? ''
+      if (sock.data.in.length > MAX_SOCKET_LINE) {
+        logger.warn(`dropping an over-long line from a session (${sock.data.in.length} chars)`)
+        sock.data.in = ''
+      }
+      for (const line of lines) {
         if (!line.trim()) continue
         try {
           const msg = JSON.parse(line)
@@ -800,6 +854,35 @@ function pollOwner(pollId: string): Slot | undefined {
   return undefined
 }
 
+/** May this user wake (or revive) this slot's session? The same checks as
+ *  routing: the allowlist for main, the group's policy for a topic. */
+function mayWake(slot: Slot, user: string): boolean {
+  if (!user) return false
+  return slot.chat ? allowedInGroup(slot.chat, user) : loadAccess().allowFrom.includes(user)
+}
+
+/** This bot's username (from getMe, asked once it is first needed). */
+let botUsername: string | undefined
+async function ownUsername(): Promise<string | undefined> {
+  if (botUsername) return botUsername
+  try {
+    botUsername = (await api('getMe'))?.username
+  } catch (err) {
+    ignored('getMe', err)
+  }
+  return botUsername
+}
+
+/** Is this text the command /name, and is it for this bot ("ours") or
+ *  addressed to another one with /name@otherbot ("other")? */
+async function commandFor(text: string, name: string): Promise<'ours' | 'other' | undefined> {
+  const m = new RegExp(`^/${name}(?:@(\\w+))?(?=\\s|$)`).exec(text)
+  if (!m) return undefined
+  if (!m[1]) return 'ours'
+  const me = await ownUsername()
+  return me && m[1].toLowerCase() === me.toLowerCase() ? 'ours' : 'other'
+}
+
 async function handleUpdate(u: any): Promise<void> {
   const msg = u.message ?? u.edited_message
   // Commands only from new messages: editing an old one must not run it again.
@@ -809,7 +892,13 @@ async function handleUpdate(u: any): Promise<void> {
   // (started if needed); it checks who voted.
   if (u.poll_answer) {
     const owner = pollOwner(String(u.poll_answer.poll_id))
-    if (owner) deliver(owner, u)
+    if (!owner) return
+    const r = runtime(owner.name)
+    // A running session checks the voter itself; a stopped one is only
+    // woken (the queue starts it) for a voter who may talk to it.
+    const voter = String(u.poll_answer.user?.id ?? '')
+    if ((r.sock && !r.stopping) || mayWake(owner, voter)) deliver(owner, u)
+    else logger.debug(`${owner.name}: poll vote from ${voter || 'nobody'} not delivered, the session is not running`)
     return
   }
   // Reactions carry no topic: offer them to every running session of that
@@ -824,12 +913,14 @@ async function handleUpdate(u: any): Promise<void> {
   if (!chat) return
   const from = String((msg ?? cq)?.from?.id ?? '')
 
-  if (command && /^\/sessions(@\w+)?\b/.test(command)) {
-    if (loadAccess().allowFrom.includes(from)) await reportSessions(String(chat.id), msg.message_thread_id)
+  const sessions = command ? await commandFor(command, 'sessions') : undefined
+  if (sessions) {
+    if (sessions === 'ours' && loadAccess().allowFrom.includes(from)) await reportSessions(String(chat.id), msg.message_thread_id)
     return
   }
-  if (command && /^\/restart(@\w+)?(\s|$)/.test(command)) {
-    await onRestartCommand(msg, from)
+  const restart = command ? await commandFor(command, 'restart') : undefined
+  if (restart) {
+    if (restart === 'ours') await onRestartCommand(msg, from)
     return
   }
   if (typeof cq?.data === 'string' && cq.data.startsWith('restart:')) {
@@ -885,13 +976,19 @@ async function handleUpdate(u: any): Promise<void> {
 async function wake(slot: Slot): Promise<void> {
   const r = runtime(slot.name)
   if (alive(r.pid) || r.gaveUp) return
+  // Its last start failed: wait before the next try (see start).
+  if (r.retryStartAt && Date.now() < r.retryStartAt) return
   const cap = capacity()
   if (!cap.ok && !slot.pinned) {
+    // One session stopped to make room is enough: wait for it to exit
+    // instead of stopping another one at every message or tick.
+    if (running().some(s => runtime(s.name).makingRoom)) return
     const victim = running()
       .filter(s => !s.pinned && s.name !== slot.name && runtime(s.name).status === 'idle' && !runtime(s.name).queue.length && !runtime(s.name).stopping)
       .sort((a, b) => a.lastActive - b.lastActive)[0]
     if (victim) {
       stop(victim, `making room for ${slot.name}`)
+      runtime(victim.name).makingRoom = true
       return // started by the tick once the victim is gone
     }
     if (!r.queuedNotice) {
@@ -901,7 +998,8 @@ async function wake(slot: Slot): Promise<void> {
     }
     return
   }
-  if (slot.chat) {
+  // Announced once: retries after a failed start are not announced again.
+  if (slot.chat && !r.startFailures) {
     const resuming = validSession(slot.sessionId)
     const id = await notify(slot, t(resuming ? 'routerWaking' : 'routerStarting'))
     if (id) r.startNotice = { chat: slot.chat, id }
@@ -1132,6 +1230,7 @@ async function tick(): Promise<void> {
       r.pid = undefined
       r.sock = undefined
       r.status = undefined
+      r.makingRoom = undefined
       if (planned) {
         log(`${slot.name}: stopped`)
         slot.busy = undefined
@@ -1317,19 +1416,33 @@ const original = handleUpdate
 // Reset the crash guard when the user talks to a slot that gave up.
 async function handleWithRevive(u: any): Promise<void> {
   const msg = u.message
-  if (msg?.is_topic_message) {
-    const r = rt.get(`t${msg.message_thread_id}`)
-    if (r?.gaveUp) Object.assign(r, { gaveUp: false, quickExits: 0 })
-  } else if (msg?.chat?.type === 'private') {
-    const r = rt.get('main')
-    if (r?.gaveUp) Object.assign(r, { gaveUp: false, quickExits: 0 })
-  }
+  const from = String(msg?.from?.id ?? '')
+  const slot = msg?.is_topic_message
+    ? findTopicSlot(String(msg.chat?.id), msg.message_thread_id)
+    : msg?.chat?.type === 'private'
+      ? slots.get('main')
+      : undefined
+  // Only someone who may talk to the session brings it back.
+  const r = slot && rt.get(slot.name)
+  if (slot && r?.gaveUp && mayWake(slot, from)) Object.assign(r, { gaveUp: false, quickExits: 0, startFailures: undefined, retryStartAt: undefined })
   await original(u)
 }
 
+void ownUsername()
 log(`router up: tmux session ${TMUX_SESSION}, ${slots.size} slot(s), idle stop ${IDLE_MS / 60_000} min`)
-setInterval(() => void tick().catch(err => log(`tick failed: ${err}`)), TICK_MS)
-void tick()
+// A tick awaits Telegram and can outlast TICK_MS: never run two at once.
+let ticking = false
+const runTick = (): void => {
+  if (ticking) return
+  ticking = true
+  void tick()
+    .catch(err => log(`tick failed: ${err}`))
+    .finally(() => {
+      ticking = false
+    })
+}
+setInterval(runTick, TICK_MS)
+runTick()
 
 // Scheduled messages (the schedule tool): the router is the one process that
 // is always up, so it sends them, whether or not their session still runs.

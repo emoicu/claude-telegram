@@ -217,6 +217,7 @@ export const en = {
   routerInterrupted: '⚠️ This session stopped unexpectedly while Claude was working. Bringing it back…',
   routerContinuing: '✅ Session back. Claude is picking up where it left off.',
   routerInterruptedAgain: '⚠️ This session was cut off again soon after it carried on, so it will not carry on by itself this time. Send a message to tell Claude what to do.',
+  routerInterruptedFresh: '⚠️ Session back, but its conversation could not be resumed, so this is a new one. Tell Claude what to do.',
   routerResumeUnsupported: '✅ Session back. Its plugin is too old to carry on by itself: send a message to tell Claude to go on.',
   routerCrashLoop: '⚠️ This session keeps crashing right after it starts, so I stopped restarting it. Send a message here to try again.',
   routerNotConnected: '⚠️ This session started but has not connected after {min} minutes. ',

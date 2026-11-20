@@ -2235,6 +2235,9 @@ function connectRouter(): void {
             } else if (msg.resume && typeof msg.resume.text === 'string' && typeof msg.resume.chat_id === 'string') {
               // The router's request to carry on after an interrupted turn.
               const { chat_id, text, id } = msg.resume as { chat_id: string; text: string; id?: string }
+              // Like an inbound message: the status line follows this chat.
+              noteStatusChat(chat_id)
+              void bot.api.sendChatAction(chat_id, 'typing').catch(() => {})
               deliverInbound(
                 {
                   method: 'notifications/claude/channel',

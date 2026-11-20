@@ -250,6 +250,7 @@ type Runtime = {
   updateTo?: string // stopped to pick up this update (e.g. "Claude Code 2.1.330")
   plugin?: string // plugin version its server.ts runs, from its hello
   can?: string[] // what its server.ts understands beyond updates, from its hello
+  resumedConversation?: boolean // this process was started with --resume
   rssMB?: number
   quickExits: number
   gaveUp?: boolean
@@ -546,7 +547,7 @@ async function start(slot: Slot): Promise<void> {
     return
   }
   const pid = windowPid(slot.name)
-  Object.assign(r, { pid, startedAt: Date.now(), stopping: false, dialogDone: false, status: undefined, queuedNotice: false, connected: false })
+  Object.assign(r, { pid, startedAt: Date.now(), stopping: false, dialogDone: false, status: undefined, queuedNotice: false, connected: false, resumedConversation: resume.length > 0 })
   slot.lastActive = Date.now()
   dirty = true
   log(`${slot.name}: started pid ${pid}${resume.length ? ` resuming ${slot.sessionId}` : ' (new session)'} in ${slot.cwd}`)
@@ -627,8 +628,9 @@ function loadQueue(): void {
 function deliver(slot: Slot, update: unknown): void {
   const r = runtime(slot.name)
   slot.lastActive = Date.now()
-  const chat = (update as { message?: { chat?: { id?: number } } }).message?.chat?.id
-  if (chat != null) slot.lastChat = String(chat)
+  // Where main's carry-on request goes: the direct message chat it last heard from.
+  const chat = (update as { message?: { chat?: { id?: number; type?: string } } }).message?.chat
+  if (chat?.type === 'private' && chat.id != null) slot.lastChat = String(chat.id)
   dirty = true
   if (r.sock) send(r.sock, { update })
   else {
@@ -645,18 +647,20 @@ const CARRY_ON_AGAIN_MS = 10 * 60_000
  * restarted): remember it, so that once it is back Claude is asked to carry
  * on. Claude Code itself marks such a turn as interrupted and waits.
  */
-async function markInterrupted(slot: Slot, why: string): Promise<void> {
+function markInterrupted(slot: Slot, why: string): void {
   slot.busy = undefined
   dirty = true
+  // The notices go out in the background: the tick (or the router's start)
+  // must not wait on Telegram.
   if (slot.carriedOnAt && Date.now() - slot.carriedOnAt < CARRY_ON_AGAIN_MS) {
-    log(`${slot.name}: ${why} mid-turn again soon after carrying on, not carrying on again`)
+    log(`${slot.name}: ${why} mid-turn again while carrying on, not carrying on again`)
     slot.interrupted = undefined
-    await notify(slot, t('routerInterruptedAgain'))
+    void notify(slot, t('routerInterruptedAgain'))
     return
   }
   log(`${slot.name}: ${why} mid-turn, will ask it to carry on`)
   slot.interrupted = Date.now()
-  await notify(slot, t('routerInterrupted'))
+  void notify(slot, t('routerInterrupted'))
 }
 
 /** Ask a session that came back after an interrupted turn to carry on. */
@@ -664,10 +668,20 @@ async function carryOn(slot: Slot, r: Runtime, sock: Socket<SockData>): Promise<
   const at = slot.interrupted!
   slot.interrupted = undefined
   dirty = true
-  const chat_id = slot.chat ?? slot.lastChat ?? loadAccess().allowFrom[0]
-  if (!r.can?.includes('resume') || !chat_id) {
+  if (!r.resumedConversation) {
+    // A new conversation (the old one could not be resumed) has nothing to carry on.
+    log(`${slot.name}: came back as a new conversation, not asking it to carry on`)
+    await notify(slot, t('routerInterruptedFresh'))
+    return
+  }
+  if (!r.can?.includes('resume')) {
     log(`${slot.name}: cannot ask it to carry on (plugin ${r.plugin})`)
     await notify(slot, t('routerResumeUnsupported'))
+    return
+  }
+  const chat_id = slot.chat ?? slot.lastChat ?? loadAccess().allowFrom[0]
+  if (!chat_id) {
+    log(`${slot.name}: no chat to ask it to carry on in`)
     return
   }
   slot.carriedOnAt = Date.now()
@@ -848,6 +862,7 @@ async function handleUpdate(u: any): Promise<void> {
   const slot = topicSlot(chatId, thread, title)
   if (msg?.forum_topic_closed) {
     slot.closed = true
+    slot.interrupted = undefined
     dirty = true
     stop(slot, 'topic closed')
     return
@@ -1091,9 +1106,13 @@ async function tick(): Promise<void> {
         if (slot.name === 'main') writeFileSync(join(STATE_DIR, 'last-session'), `${info.sessionId}\n`)
       }
       r.status = info?.status
-      const busy = !!r.status && r.status !== 'idle'
+      // Only working counts: a session waiting for the user (a permission
+      // prompt, a question) must not carry on by itself.
+      const busy = r.status === 'busy'
       if (busy !== !!slot.busy) {
         slot.busy = busy || undefined
+        // The carried-on turn is over: a later one may carry on again.
+        if (!busy) slot.carriedOnAt = undefined
         dirty = true
       }
       r.version = (info as { version?: string } | undefined)?.version ?? r.version
@@ -1124,7 +1143,6 @@ async function tick(): Promise<void> {
       } else {
         r.quickExits = ran < QUICK_EXIT_MS ? r.quickExits + 1 : 0
         log(`${slot.name}: exited after ${Math.round(ran / 1000)}s (quick exits in a row: ${r.quickExits})`)
-        if (slot.busy) await markInterrupted(slot, 'exited unexpectedly')
         if (r.quickExits >= MAX_QUICK_EXITS) {
           if (slot.sessionId && r.quickExits === MAX_QUICK_EXITS) {
             log(`${slot.name}: giving up on resuming ${slot.sessionId}, next start is a new session`)
@@ -1133,9 +1151,12 @@ async function tick(): Promise<void> {
           } else {
             r.gaveUp = true
             slot.interrupted = undefined
+            slot.busy = undefined
             await notify(slot, t('routerCrashLoop'))
           }
         }
+        // After the crash-loop check: a session given up on is not "coming back".
+        if (slot.busy && !r.gaveUp) markInterrupted(slot, 'exited unexpectedly')
       }
     }
     if (r.restart?.stopped) {
@@ -1153,7 +1174,7 @@ async function tick(): Promise<void> {
     if (r.restart) r.restart = undefined
     if (r.gaveUp) continue
     // Restart main always, and any slot that has messages waiting or was cut off mid-turn.
-    if (slot.pinned || r.queue.length || slot.interrupted) await wake(slot)
+    if (slot.pinned || r.queue.length || (slot.interrupted && !slot.closed)) await wake(slot)
   }
   checkForUpdate()
   saveSlots()
@@ -1177,6 +1198,8 @@ async function startTimedOut(slot: Slot, r: Runtime): Promise<void> {
       (screen ? `\n\n${t('routerLastLines')}\n${screen.slice(-800)}` : ''),
   )
   r.connected = true // report once per start
+  // Stopped by the router, not cut off: not a turn to carry on.
+  slot.busy = undefined
   if (again) {
     r.startRetried = true
     stop(slot, 'start timed out')
@@ -1278,14 +1301,14 @@ loadQueue()
 for (const slot of slots.values()) {
   const pid = windowPid(slot.name)
   if (pid && alive(pid)) {
-    Object.assign(runtime(slot.name), { pid, startedAt: Date.now() - QUICK_EXIT_MS, dialogDone: true })
+    Object.assign(runtime(slot.name), { pid, startedAt: Date.now() - QUICK_EXIT_MS, dialogDone: true, resumedConversation: true })
     renameWindow(slot)
     log(`${slot.name}: adopted running session pid ${pid}`)
   }
 }
 // Sessions that were working when the router (or the whole host) went down.
 for (const slot of slots.values()) {
-  if (slot.busy && !alive(runtime(slot.name).pid)) await markInterrupted(slot, 'was gone after the router restarted')
+  if (slot.busy && !alive(runtime(slot.name).pid)) markInterrupted(slot, 'was gone after the router restarted')
 }
 dirty = true
 saveSlots()

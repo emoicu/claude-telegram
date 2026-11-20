@@ -213,6 +213,27 @@ describe.skipIf(!HAS_TMUX)('carrying on after an interrupted turn', () => {
     expect(resumes().length).toBe(1)
   }, 60_000)
 
+  test('once the carried-on turn is over, a later interruption carries on again', async () => {
+    await killMidTurn()
+    await tg.waitFor(said(/picking up where it left off/), 'carrying-on notice', 20_000)
+    setStatus('busy')
+    await Bun.sleep(3500)
+    setStatus('idle')
+    await Bun.sleep(3500) // the carried-on turn finished
+    await killMidTurn()
+    await until('a second carry-on', () => resumes().length === 2, 20_000)
+  }, 60_000)
+
+  test('a session waiting for the user is not asked to carry on', async () => {
+    setStatus('waiting')
+    await Bun.sleep(3500)
+    process.kill(starts()[0]!.pid, 'SIGKILL')
+    setStatus('idle')
+    await until('a second start', () => starts()[1])
+    await Bun.sleep(4000)
+    expect(resumes()).toEqual([])
+  }, 30_000)
+
   test('an idle session that dies is not asked to carry on', async () => {
     process.kill(starts()[0]!.pid, 'SIGKILL')
     await until('a second start', () => starts()[1])

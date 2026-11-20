@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type Subprocess, spawn } from 'bun'
@@ -17,6 +17,9 @@ let dir: string
 let claudeDir: string
 let router: Subprocess | undefined
 const SESSION = 'e2e'
+// Forum groups the owner may use (see allowGroups).
+const GROUP = -1001234567890
+const GROUP2 = -1009876543210
 
 function env(): Record<string, string> {
   return {
@@ -34,6 +37,68 @@ function env(): Record<string, string> {
 }
 
 const tmux = (...args: string[]) => Bun.spawnSync(['tmux', ...args], { env: env() })
+
+function spawnRouter(extra: Record<string, string> = {}): void {
+  router = spawn(['bun', join(import.meta.dir, '..', 'router.ts')], {
+    env: { ...env(), ...extra },
+    stdout: 'ignore',
+    stderr: Bun.file(join(dir, 'router.err')),
+  })
+}
+
+/** Stop the router and start it again (running sessions are adopted). */
+async function restartRouter(extra: Record<string, string> = {}, before?: () => void): Promise<void> {
+  router?.kill()
+  await router?.exited
+  before?.()
+  spawnRouter(extra)
+  await Bun.sleep(1500)
+}
+
+/** Let the owner use the forum groups GROUP and GROUP2. */
+function allowGroups(): void {
+  writeFileSync(
+    join(dir, 'access.json'),
+    JSON.stringify({
+      dmPolicy: 'allowlist',
+      allowFrom: [String(OWNER)],
+      groups: { [GROUP]: { allowFrom: [String(OWNER)] }, [GROUP2]: { allowFrom: [String(OWNER)] } },
+      pending: {},
+    }),
+  )
+}
+
+let nextTopicMessage = 100
+/** A message in topic `thread` of forum group `chat`. */
+function topicMessage(chat: number, thread: number, user: number, text: string): void {
+  tg.push({
+    message: {
+      message_id: nextTopicMessage++,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chat, type: 'supergroup', title: 'G', is_forum: true },
+      from: { id: user, is_bot: false, first_name: `U${user}` },
+      is_topic_message: true,
+      message_thread_id: thread,
+      text,
+    },
+  })
+}
+
+/** What one fake Claude process received, as parsed lines. */
+function receivedBy(pid: number): any[] {
+  try {
+    return readFileSync(join(claudeDir, `received-${pid}.log`), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l))
+  } catch {
+    return []
+  }
+}
+
+const slotsFile = () => join(dir, 'router', 'slots.json')
+const savedSlots = (): { name: string; chat?: string; thread?: number }[] => JSON.parse(readFileSync(slotsFile(), 'utf8'))
+const terms = () => (existsSync(join(claudeDir, 'terms.log')) ? readFileSync(join(claudeDir, 'terms.log'), 'utf8').trim().split('\n').filter(Boolean) : [])
 
 /** pid and arguments of every fake Claude started so far. */
 function starts(): { pid: number; args: string }[] {
@@ -71,7 +136,7 @@ beforeEach(async () => {
   writeFileSync(join(dir, '.env'), `TELEGRAM_BOT_TOKEN=123456:${'x'.repeat(35)}\n`, { mode: 0o600 })
   writeFileSync(join(dir, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: [String(OWNER)], groups: {}, pending: {} }))
   tmux('new-session', '-d', '-s', SESSION, 'sleep 600')
-  router = spawn(['bun', join(import.meta.dir, '..', 'router.ts')], { env: env(), stdout: 'ignore', stderr: Bun.file(join(dir, 'router.err')) })
+  spawnRouter()
   // The router starts main right away; wait until it has said hello.
   await until('main to start', () => starts().length === 1)
   await Bun.sleep(500)
@@ -248,4 +313,125 @@ describe.skipIf(!HAS_TMUX)('carrying on after an interrupted turn', () => {
     await tg.waitFor(said(/too old to carry on by itself/), 'unsupported notice', 20_000)
     expect(resumes()).toEqual([])
   }, 40_000)
+})
+
+describe.skipIf(!HAS_TMUX)('commands for other bots', () => {
+  test('/sessions and /restart addressed to another bot are ignored', async () => {
+    tg.dm(OWNER, '/sessions@otherbot')
+    tg.dm(OWNER, '/restart@otherbot')
+    await Bun.sleep(4000)
+    expect(tg.sent(/^send|^edit/).filter(c => String(c.body.chat_id) === String(OWNER))).toEqual([])
+    expect(starts().length).toBe(1)
+    tg.dm(OWNER, '/sessions@test_bot')
+    await tg.waitFor(c => c.method === 'sendRichMessage' && String(c.body.chat_id) === String(OWNER), 'sessions report')
+  }, 20_000)
+})
+
+describe.skipIf(!HAS_TMUX)('topics', () => {
+  test('the same topic number in two groups gets two sessions', async () => {
+    allowGroups()
+    topicMessage(GROUP, 5, OWNER, 'hello from group one')
+    await until('the first topic session', () => starts()[1])
+    topicMessage(GROUP2, 5, OWNER, 'hello from group two')
+    await until('the second topic session', () => starts()[2])
+    await Bun.sleep(1000)
+    topicMessage(GROUP2, 5, OWNER, 'again from group two')
+    await Bun.sleep(3500)
+    expect(starts().length).toBe(3)
+    const topics = savedSlots().filter(s => s.name !== 'main')
+    // The first keeps the name older routers used; the other is told apart by its group.
+    expect(topics).toEqual([
+      expect.objectContaining({ name: 't5', chat: String(GROUP), thread: 5 }),
+      expect.objectContaining({ name: 't5-3210', chat: String(GROUP2), thread: 5 }),
+    ])
+    const texts = (pid: number) => receivedBy(pid).map(l => l.update?.message?.text)
+    expect(texts(starts()[1]!.pid)).toEqual(['hello from group one'])
+    expect(texts(starts()[2]!.pid)).toEqual(['hello from group two', 'again from group two'])
+  }, 40_000)
+
+  test('a failing start backs off, is announced once, and the chat is told once', async () => {
+    allowGroups()
+    tmux('kill-server') // every new tmux window now fails
+    topicMessage(GROUP, 9, OWNER, 'start please')
+    const inTopic = () => tg.sent('sendMessage').filter(c => String(c.body.chat_id) === String(GROUP) && c.body.message_thread_id === 9)
+    await tg.waitFor(c => inTopic().includes(c) && /tmux failed/.test(textOf(c)), 'start-failed notice', 30_000)
+    await Bun.sleep(7000)
+    expect(inTopic().map(textOf)).toEqual([expect.stringMatching(/Starting a new session/), expect.stringMatching(/tmux failed/)])
+  }, 50_000)
+
+  test('at capacity, only one idle session is stopped to make room', async () => {
+    allowGroups()
+    await restartRouter({ TELEGRAM_ROUTER_MAX: '3', TELEGRAM_ROUTER_RESERVE_MB: '0', TELEGRAM_ROUTER_SESSION_MB: '1' })
+    topicMessage(GROUP, 1, OWNER, 'one')
+    await until('topic 1', () => starts()[1])
+    topicMessage(GROUP, 2, OWNER, 'two')
+    await until('topic 2', () => starts()[2])
+    await Bun.sleep(3500) // a tick reads both as idle
+    writeFileSync(join(claudeDir, 'fake-ignore-term'), '') // the victim takes its time to exit
+    topicMessage(GROUP, 3, OWNER, 'three')
+    await until('a session stopped to make room', () => terms().length === 1)
+    topicMessage(GROUP, 3, OWNER, 'three again')
+    await Bun.sleep(7000)
+    expect(terms()).toEqual([String(starts()[1]!.pid)])
+    expect(starts().length).toBe(3)
+  }, 50_000)
+
+  test('a poll vote wakes a stopped topic session only for a voter who may use it', async () => {
+    allowGroups()
+    await restartRouter({}, () => {
+      writeFileSync(slotsFile(), JSON.stringify([...savedSlots(), { name: 't7', chat: String(GROUP), thread: 7, cwd: dir, lastActive: Date.now() }]))
+      const poll = { chat: String(GROUP), id: 1, question: 'q', options: ['a', 'b'], multiple: false, at: Date.now() }
+      writeFileSync(join(dir, 'polls-t7.json'), JSON.stringify({ p1: poll }))
+    })
+    const vote = (user: number) =>
+      tg.push({ poll_answer: { poll_id: 'p1', user: { id: user, is_bot: false, first_name: 'U' }, option_ids: [0] } })
+    vote(STRANGER)
+    await Bun.sleep(4000)
+    expect(starts().length).toBe(1)
+    vote(OWNER)
+    const topic = await until('topic 7 to start', () => starts()[1])
+    const got = await until('the vote to arrive', () => receivedBy(topic.pid).find(l => l.update?.poll_answer))
+    expect(got.update.poll_answer.user.id).toBe(OWNER)
+  }, 30_000)
+})
+
+describe.skipIf(!HAS_TMUX)('delivery', () => {
+  test('a message sent while the session is restarting goes to the new process', async () => {
+    writeFileSync(join(claudeDir, 'fake-ignore-term'), '') // exits only when killed, 15 s later
+    tg.dm(OWNER, '/restart')
+    await tg.waitFor(said(/Restarting this session/), 'restarting notice')
+    await until('the old process to get SIGTERM', () => terms().length === 1)
+    tg.dm(OWNER, 'sent while restarting')
+    rmSync(join(claudeDir, 'fake-ignore-term'))
+    const second = await until('a second start', () => starts()[1], 25_000)
+    const texts = (pid: number) => receivedBy(pid).map(l => l.update?.message?.text)
+    await until('the message at the new process', () => texts(second.pid).includes('sent while restarting'))
+    expect(texts(starts()[0]!.pid)).not.toContain('sent while restarting')
+  }, 45_000)
+
+  test('large updates with multi-byte text arrive whole', async () => {
+    const big = `${'é'.repeat(1_000_000)}END`
+    tg.dm(OWNER, big)
+    const pid = starts()[0]!.pid
+    const line = await until('the big update', () => receivedBy(pid).find(l => l.update?.message?.text?.endsWith('END')), 20_000)
+    expect(line.update.message.text).toBe(big)
+  }, 30_000)
+
+  test('a hello split across reads, inside a character, is understood', async () => {
+    writeFileSync(join(claudeDir, 'fake-split-hello'), '')
+    tg.dm(OWNER, '/restart')
+    await tg.waitFor(said(/Restarted, same conversation resumed · plugin 9\.9\.9-ü/), 'restarted notice', 20_000)
+  }, 30_000)
+
+  test('a stranger does not revive a session given up on; the owner does', async () => {
+    writeFileSync(join(claudeDir, 'fake-crash'), '')
+    tg.dm(OWNER, '/restart')
+    await tg.waitFor(said(/keeps (crashing|exiting)|crash/i), 'crash-loop notice', 30_000)
+    const n = starts().length
+    tg.dm(STRANGER, 'hello')
+    await Bun.sleep(5000)
+    expect(starts().length).toBe(n)
+    tg.dm(OWNER, 'hello')
+    await until('a start after the owner wrote', () => starts().length > n)
+  }, 50_000)
 })

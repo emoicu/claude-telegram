@@ -4,7 +4,9 @@
 // keeps a transcript file so --resume counts as valid, says hello on the
 // router socket like server.ts and logs every start to starts.log. With a
 // fake-crash file it exits right after starting. Lines from the router go to
-// received.log.
+// received.log (all sessions) and received-<pid>.log, byte for byte; every
+// SIGTERM is logged to terms.log. With fake-split-hello the hello goes out in
+// two writes split inside a character.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -40,14 +42,23 @@ await Bun.connect({
     open(sock) {
       // An older plugin (fake-no-resume) does not say what it can do.
       const can = existsSync(join(dir, 'fake-no-resume')) ? {} : { can: ['resume'] }
+      if (existsSync(join(dir, 'fake-split-hello'))) {
+        const bytes = Buffer.from(`${JSON.stringify({ hello: process.env.TELEGRAM_SLOT, plugin: '9.9.9-ü', ...can })}\n`)
+        const cut = bytes.indexOf(Buffer.from('ü')) + 1 // between the two bytes of ü
+        sock.write(bytes.subarray(0, cut))
+        setTimeout(() => sock.write(bytes.subarray(cut)), 300)
+        return
+      }
       sock.write(`${JSON.stringify({ hello: process.env.TELEGRAM_SLOT, plugin: '9.9.9', ...can })}\n`)
     },
     data(_sock, chunk) {
-      appendFileSync(join(dir, 'received.log'), chunk.toString())
+      appendFileSync(join(dir, 'received.log'), chunk)
+      appendFileSync(join(dir, `received-${process.pid}.log`), chunk)
     },
   },
 })
 
 process.on('SIGTERM', () => {
+  appendFileSync(join(dir, 'terms.log'), `${process.pid}\n`)
   if (!existsSync(join(dir, 'fake-ignore-term'))) process.exit(0)
 })

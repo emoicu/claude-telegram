@@ -20,8 +20,13 @@ export type Scheduled = {
   thread?: number
   /** GitHub-flavored Markdown, sent as a rich message (plain text if that fails). */
   text: string
-  /** Next delivery, ms since the epoch. */
+  /**
+   * Next scheduled slot, ms since the epoch. Repeating messages count their
+   * next run from it, so it never moves because of a retry.
+   */
   at: number
+  /** While deliveries of this slot keep failing: when to try again. */
+  retry?: number
   repeat?: Repeat
   created: number
   /** Failed delivery attempts in a row. */
@@ -31,7 +36,10 @@ export type Scheduled = {
 export const MAX_TEXT = 4000
 export const MAX_PER_CHAT = 50
 export const MAX_AHEAD_MS = 366 * 86400_000
-/** A delivery that keeps failing is dropped after this many tries. */
+/**
+ * A delivery that keeps failing is given up after this many tries: a one-off
+ * message is dropped, a repeating one skips to its next run.
+ */
 export const MAX_FAILURES = 5
 const RETRY_MS = 60_000
 const PERIOD_MS: Record<Repeat, number> = { daily: 86400_000, weekly: 7 * 86400_000 }
@@ -48,6 +56,9 @@ export function parseWhen(value: string, now: number): number | string {
   if (at > now + MAX_AHEAD_MS) return 'at most a year ahead'
   return Math.max(at, now)
 }
+
+/** When a message is due: its retry time while failing, otherwise its slot. */
+export const dueAt = (s: Scheduled): number => Math.max(s.at, s.retry ?? s.at)
 
 /** The next run of a repeating message after `now`, or undefined for one-off messages. */
 export function nextRun(s: Scheduled, now: number): number | undefined {
@@ -135,7 +146,9 @@ export type Send = (s: Scheduled) => Promise<void>
  * Send every message that is due. A message is claimed by renaming its file
  * first, so two processes never send it twice and a cancel during sending
  * is harmless. Repeating messages are written back with their next time;
- * failures are retried a minute later, up to MAX_FAILURES times.
+ * failures are retried a minute later, up to MAX_FAILURES times, without
+ * moving the slot the next run is counted from. After that a one-off
+ * message is dropped and a repeating one skips this run.
  * `allowed` is checked at send time, so a chat removed from the allowlist
  * gets nothing more. Returns how many were sent.
  */
@@ -149,7 +162,8 @@ export async function deliverDue(
   recoverStale(dir, now)
   let sent = 0
   for (const s of listScheduled(dir)) {
-    if (s.at > now) break
+    if (s.at > now) break // sorted by slot, and a retry is never before it
+    if (dueAt(s) > now) continue
     const claimed = join(dir, `.${s.id}.sending`)
     try {
       renameSync(fileOf(dir, s.id), claimed)
@@ -164,11 +178,17 @@ export async function deliverDue(
         await send(s)
         sent++
         const at = nextRun(s, now)
-        if (at) next = { ...s, at, failures: 0 }
+        if (at) next = { ...s, at, retry: undefined, failures: 0 }
       } catch (err) {
         const failures = (s.failures ?? 0) + 1
-        onError(`scheduled ${s.id}: send failed (${failures}/${MAX_FAILURES})`, err)
-        if (failures < MAX_FAILURES) next = { ...s, at: now + RETRY_MS, failures }
+        if (failures < MAX_FAILURES) {
+          onError(`scheduled ${s.id}: send failed (${failures}/${MAX_FAILURES}), retrying`, err)
+          next = { ...s, retry: now + RETRY_MS, failures }
+        } else {
+          const at = nextRun(s, now)
+          onError(`scheduled ${s.id}: send failed (${failures}/${MAX_FAILURES}), ${at ? 'skipping this run' : 'dropped'}`, err)
+          if (at) next = { ...s, at, retry: undefined, failures: 0 }
+        }
       }
     }
     try {
@@ -189,13 +209,30 @@ export function describeScheduled(s: Scheduled): string {
 
 export type Api = (method: string, body: Record<string, unknown>) => Promise<unknown>
 
-/** Send as a rich message (Bot API 10.1), falling back to plain text. */
+/**
+ * Whether Telegram answered a call with an error saying it will not do it
+ * (a 4xx other than a rate limit), as opposed to a network error or timeout,
+ * after which the message may have arrived anyway. Both the router's api()
+ * (`code`) and grammY's GrammyError (`error_code`) carry the status.
+ */
+export function rejectedByTelegram(err: unknown): boolean {
+  const e = err as { error_code?: unknown; code?: unknown } | undefined
+  const status = typeof e?.error_code === 'number' ? e.error_code : typeof e?.code === 'number' ? e.code : undefined
+  return status !== undefined && status >= 400 && status < 500 && status !== 429
+}
+
+/**
+ * Send as a rich message (Bot API 10.1), falling back to plain text when
+ * Telegram rejects it. Any other failure is thrown, so the delivery is
+ * retried later rather than possibly sent twice.
+ */
 export function scheduledSender(api: Api): Send {
   return async s => {
     const base = { chat_id: s.chat_id, ...(s.thread ? { message_thread_id: s.thread } : {}) }
     try {
       await api('sendRichMessage', { ...base, rich_message: { markdown: expandTimes(s.text, 'rich') } })
-    } catch {
+    } catch (err) {
+      if (!rejectedByTelegram(err)) throw err
       await api('sendMessage', { ...base, text: expandTimes(s.text, 'text') })
     }
   }

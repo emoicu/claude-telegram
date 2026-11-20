@@ -10,8 +10,10 @@ import {
   MAX_FAILURES,
   nextRun,
   parseWhen,
+  rejectedByTelegram,
   type Scheduled,
   saveScheduled,
+  scheduledSender,
 } from './schedule'
 
 const NOW = Date.parse('2026-11-19T03:00:00Z')
@@ -110,6 +112,46 @@ describe('deliverDue', () => {
     expect(errors).toHaveLength(MAX_FAILURES)
     expect(listScheduled(dir)).toEqual([])
   })
+  test('a retried repeating message keeps its time of day', async () => {
+    const dir = tmp()
+    saveScheduled(dir, msg({ repeat: 'daily' }))
+    const fail = async () => {
+      throw new Error('network')
+    }
+    await deliverDue(dir, NOW, fail, () => true)
+    const retrying = listScheduled(dir)[0]!
+    expect(retrying.at).toBe(NOW)
+    expect(retrying.retry).toBe(NOW + 60_000)
+    // Not due again before the retry time.
+    const { sent, send } = ok()
+    expect(await deliverDue(dir, NOW + 30_000, send, () => true)).toBe(0)
+    expect(await deliverDue(dir, NOW + 61_000, send, () => true)).toBe(1)
+    expect(sent).toEqual(['abcd1'])
+    const next = listScheduled(dir)[0]!
+    expect(next.at).toBe(NOW + DAY)
+    expect(next.retry).toBeUndefined()
+    expect(next.failures).toBe(0)
+  })
+  test('a repeating message that keeps failing skips this run, not the series', async () => {
+    const dir = tmp()
+    saveScheduled(dir, msg({ repeat: 'daily' }))
+    const errors: string[] = []
+    const fail = async () => {
+      throw new Error('network')
+    }
+    let t = NOW
+    for (let i = 0; i < MAX_FAILURES; i++) {
+      await deliverDue(dir, t, fail, () => true, w => errors.push(w))
+      t += 61_000
+    }
+    expect(errors).toHaveLength(MAX_FAILURES)
+    expect(errors.at(-1)).toContain('skipping this run')
+    const next = listScheduled(dir)
+    expect(next).toHaveLength(1)
+    expect(next[0]!.at).toBe(NOW + DAY)
+    expect(next[0]!.retry).toBeUndefined()
+    expect(next[0]!.failures).toBe(0)
+  })
   test('chats that are no longer allowed get nothing', async () => {
     const dir = tmp()
     saveScheduled(dir, msg())
@@ -132,6 +174,48 @@ describe('deliverDue', () => {
     await deliverDue(dir, Date.now(), send, () => true)
     expect(sent).toEqual(['abcd1'])
     expect(existsSync(claimed)).toBe(false)
+  })
+})
+
+describe('scheduledSender', () => {
+  const apiWith = (richError?: unknown) => {
+    const calls: string[] = []
+    const api = async (method: string) => {
+      calls.push(method)
+      if (method === 'sendRichMessage' && richError) throw richError
+    }
+    return { calls, api }
+  }
+  test('sends a rich message', async () => {
+    const { calls, api } = apiWith()
+    await scheduledSender(api)(msg())
+    expect(calls).toEqual(['sendRichMessage'])
+  })
+  test('falls back to plain text when Telegram rejects the rich message', async () => {
+    for (const err of [Object.assign(new Error('Bad Request'), { code: 400 }), { error_code: 400, description: 'Bad Request' }]) {
+      const { calls, api } = apiWith(err)
+      await scheduledSender(api)(msg())
+      expect(calls).toEqual(['sendRichMessage', 'sendMessage'])
+    }
+  })
+  test('does not send again after a network error, a timeout or a rate limit', async () => {
+    const errors = [
+      new TypeError('fetch failed'),
+      Object.assign(new Error('timed out'), { name: 'TimeoutError', code: 'ETIMEDOUT' }),
+      Object.assign(new Error('Too Many Requests'), { code: 429 }),
+      Object.assign(new Error('Bad Gateway'), { code: 502 }),
+    ]
+    for (const err of errors) {
+      const { calls, api } = apiWith(err)
+      await expect(scheduledSender(api)(msg())).rejects.toBe(err)
+      expect(calls).toEqual(['sendRichMessage'])
+    }
+  })
+  test('rejectedByTelegram reads both error shapes', () => {
+    expect(rejectedByTelegram({ error_code: 403 })).toBe(true)
+    expect(rejectedByTelegram({ code: 400 })).toBe(true)
+    expect(rejectedByTelegram({ code: 'ECONNRESET' })).toBe(false)
+    expect(rejectedByTelegram(undefined)).toBe(false)
   })
 })
 

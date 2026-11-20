@@ -20,6 +20,21 @@ describe('chunk', () => {
     const text = Array.from({ length: 200 }, (_, i) => `word${i}`).join(' ')
     for (const part of chunk(text, 50, 'newline')) expect(part.length).toBeLessThanOrEqual(50)
   })
+  test('a hard cut never splits an emoji', () => {
+    const high = (c: number) => c >= 0xd800 && c <= 0xdbff
+    const low = (c: number) => c >= 0xdc00 && c <= 0xdfff
+    for (const mode of ['length', 'newline'] as const) {
+      for (const text of ['😀'.repeat(30), `a${'😀'.repeat(30)}`]) {
+        const parts = chunk(text, 7, mode)
+        expect(parts.join('')).toBe(text)
+        for (const part of parts) {
+          expect(part.length).toBeLessThanOrEqual(7)
+          expect(high(part.charCodeAt(part.length - 1))).toBe(false)
+          expect(low(part.charCodeAt(0))).toBe(false)
+        }
+      }
+    }
+  })
 })
 
 describe('clip and safeName', () => {

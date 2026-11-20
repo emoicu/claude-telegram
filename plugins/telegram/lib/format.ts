@@ -9,6 +9,8 @@ import { type T, tEn } from './i18n.ts'
 /** What renderStatus/renderDraft need from a running turn. */
 export type StatusInfo = { start: number; steps: number; current?: string; note?: string }
 
+const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff
+
 export function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[] {
   if (text.length <= limit) return [text]
   const out: string[] = []
@@ -23,6 +25,8 @@ export function chunk(text: string, limit: number, mode: 'length' | 'newline'): 
       const space = rest.lastIndexOf(' ', limit)
       cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit
     }
+    // A hard cut must not split a surrogate pair (an emoji, say) in two.
+    if (cut === limit && cut > 1 && isHighSurrogate(rest.charCodeAt(cut - 1))) cut--
     out.push(rest.slice(0, cut))
     rest = rest.slice(cut).replace(/^\n+/, '')
   }

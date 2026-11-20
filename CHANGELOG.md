@@ -2,6 +2,13 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.6.1] - 2026-11-20
+
+### Fixed
+
+- `install.sh` checks that Claude Code is signed in (`claude auth status`). With `--service` it stops if not: a session the service starts would wait at the login screen, and before pairing nobody could be told on Telegram. Without `--service` it only warns.
+- `install.sh --service` makes sure Claude Code trusts the working folder (or a folder above it). If it does not, the script opens Claude Code there once to answer the trust question; without a terminal it stops and says what to run.
+
 ## [1.6.0] - 2026-11-20
 
 ### Added
@@ -140,6 +147,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.6.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.6.1
 [1.6.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.6.0
 [1.5.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.5.1
 [1.5.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.5.0

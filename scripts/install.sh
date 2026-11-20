@@ -70,6 +70,15 @@ fi
 say "Checking requirements"
 command -v claude >/dev/null || die "Claude Code not found. Install it first: https://docs.claude.com/en/docs/claude-code"
 ok "Claude Code $(claude --version 2>/dev/null | head -1)"
+# A session the service starts cannot sign in by itself: it would sit at the
+# login screen, and nobody could be told on Telegram before pairing.
+if claude auth status >/dev/null 2>&1; then
+  ok "Claude Code is signed in"
+elif [ -n "$SERVICE" ]; then
+  die "Claude Code is not signed in. Run claude once and sign in (or claude setup-token), then run this again"
+else
+  warn "Claude Code is not signed in yet: it asks you to sign in when you first start it"
+fi
 if ! command -v bun >/dev/null && [ -x "$HOME/.bun/bin/bun" ]; then PATH="$HOME/.bun/bin:$PATH"; fi
 command -v bun >/dev/null || die "Bun not found. Install it with: curl -fsSL https://bun.sh/install | bash"
 ok "Bun $(bun --version)"
@@ -154,6 +163,32 @@ if [ "$SERVICE" = install ]; then
   fi
   mkdir -p "$workdir"
   ok "Claude works in $workdir (TELEGRAM_ROUTER_MAIN_CWD in $ENV_FILE)"
+
+  # Claude Code asks once per folder whether to trust it, and nobody is there
+  # to answer for a session the service starts. Trusting a folder covers the
+  # folders inside it.
+  trusted() {
+    bun -e '
+      const [file, dir] = process.argv.slice(1)
+      let projects = {}
+      try { projects = require(file).projects ?? {} } catch {}
+      for (let d = dir; d && d !== "/"; d = d.slice(0, d.lastIndexOf("/")) || "/") {
+        if (projects[d]?.hasTrustDialogAccepted) process.exit(0)
+      }
+      process.exit(1)' "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" "$(cd "$workdir" && pwd -P)" 2>/dev/null
+  }
+  if trusted; then
+    ok "Claude Code trusts $workdir"
+  elif [ -r /dev/tty ]; then
+    echo "  Claude Code has not been told to trust $workdir yet. It will open there now:"
+    echo "  answer the trust question with Yes, then type /exit."
+    read -r -p "  Press Enter to open it... " _ </dev/tty
+    (cd "$workdir" && claude </dev/tty >/dev/tty 2>&1) || true
+    trusted || die "$workdir is still not trusted. Run: cd $workdir && claude, answer Yes, type /exit, then run this again"
+    ok "Claude Code trusts $workdir"
+  else
+    die "Claude Code has not been told to trust $workdir. Run: cd $workdir && claude, answer Yes, type /exit, then run this again"
+  fi
 
   # A copy outside the plugin: a broken plugin update cannot break it.
   mkdir -p "$SERVICE_DIR"

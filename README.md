@@ -5,7 +5,7 @@
 **Drive Claude Code from Telegram: chat with your sessions, watch them work, and steer them from your phone.**
 
 [![test](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml)
-[![version](https://img.shields.io/badge/version-1.6.0-blue)](plugins/telegram/.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-1.6.1-blue)](plugins/telegram/.claude-plugin/plugin.json)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-channel%20plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
@@ -159,7 +159,7 @@ It asks which folder Claude works in (default `~/projects`, saved as `TELEGRAM_R
 - `claude-telegram-tmux` holds the tmux session `claude` the sessions run in (`tmux attach -t claude` to look at them)
 - `claude-telegram` runs a small supervisor that keeps the router running from the installed plugin version and starts it again from the new one after `claude plugin update`. When a new version's router fails three times right after starting, it goes back to the last version that ran fine and tells you on Telegram. It refuses to start while another router uses the bot.
 
-Restarting `claude-telegram` restarts the router only; the sessions keep running. The supervisor is copied out of the plugin (to `~/.claude/channels/telegram/service/`), so a broken plugin update cannot break it; it takes the newer copy from a plugin version only after that version has run for 10 minutes, and its launcher puts the previous copy back if the new one keeps failing. Enabling lingering (so the services start without logging in) may ask for your sudo password once.
+Restarting `claude-telegram` restarts the router only; the sessions keep running. The supervisor is copied out of the plugin (to `~/.claude/channels/telegram/service/`), so a broken plugin update cannot break it; it takes the newer copy from a plugin version only after that version has run for 10 minutes, and its launcher puts the previous copy back if the new one keeps failing. Enabling lingering (so the services start without logging in) may ask for your sudo password once. Claude Code must be signed in, and must trust the working folder: nobody is there to answer those prompts for a session the service starts, so the script stops if you are not signed in, and opens Claude Code in the folder once for you to answer the trust question if it has not been asked yet.
 
 ```sh
 systemctl --user status claude-telegram        # is it running?

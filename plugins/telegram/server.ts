@@ -17,7 +17,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, openSync, readSync, closeSync, fstatSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, openSync, readSync, closeSync, fstatSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { execFile, execFileSync } from 'node:child_process'
 import { dirname, join, extname } from 'node:path'
@@ -48,7 +48,7 @@ import { activityFile, readActivity, stopFlagFile } from './lib/activity.ts'
 import { retryDelayMs } from './lib/retry.ts'
 import { handlePermissionButtons, relayPermissionRequests } from './core/permissions.ts'
 import {
-  assertAllowedChat, assertSendable, dmCommandGate, gate as gateWith, loadAccess, startApprovalPolling,
+  assertAllowedChat, assertSendable, buttonGate, dmCommandGate, gate as gateWith, loadAccess, startApprovalPolling,
 } from './core/access-store.ts'
 
 if (!TOKEN) {
@@ -151,7 +151,11 @@ function isMentioned(ctx: Context, extraPatterns?: string[]): boolean {
 }
 
 const gate = (ctx: Context): GateResult => gateWith(ctx, isMentioned)
-startApprovalPolling(bot)
+// Pairing confirmations come from one process only: the one polling Telegram
+// or, under the router, the main slot. Every other server process on the host
+// (sessions that did not load the channel, topic sessions) would send its own
+// "Paired!" for the same approval.
+if (channelMode.poll && (!routed || SLOT === 'main')) startApprovalPolling(bot)
 
 // Scheduled messages (the schedule tool) in single mode: the polling server
 // sends them. In router mode the router does, since sessions come and go.
@@ -189,9 +193,9 @@ const mcp = new Server(
         'claude/channel': {},
         // Permission-relay opt-in (anthropics/claude-cli-internal#23061).
         // Declaring this asserts we authenticate the replier — which we do:
-        // gate()/access.allowFrom already drops non-allowlisted senders before
-        // handleInbound runs. A server that can't authenticate the replier
-        // should NOT declare this.
+        // only senders in access.allowFrom can answer, by button
+        // (core/permissions.ts) or by text (handleInbound). A server that
+        // can't authenticate the replier should NOT declare this.
         'claude/channel/permission': {},
       },
     },
@@ -667,6 +671,16 @@ async function sayRich(chat_id: string, markdown: string, reply_markup?: InlineK
   }
 }
 
+/** Where a file Telegram serves at `filePath` is saved in the inbox. */
+function inboxPath(filePath: string, uniqueId: string | undefined, fallbackExt: string): string {
+  // file_path is from Telegram (trusted), but strip to safe chars anyway
+  // so nothing downstream can be tricked by an unexpected extension.
+  const rawExt = filePath.includes('.') ? filePath.split('.').pop()! : fallbackExt
+  const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || fallbackExt
+  const id = (uniqueId ?? '').replace(/[^a-zA-Z0-9_-]/g, '') || 'dl'
+  return join(INBOX_DIR, `${Date.now()}-${id}.${ext}`)
+}
+
 const chatOf = (ctx: Context) => String(ctx.chat?.id ?? ctx.from?.id)
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
@@ -706,34 +720,42 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           return fx
         }
 
+        // Files alone are fine: no text message then (Telegram rejects an
+        // empty one, which used to fail the reply before the files went out).
+        const hasText = !!rawText?.trim()
+        if (!hasText && !files.length) throw new Error('reply needs text or files')
+        const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
+        const mode = access.chunkMode ?? 'length'
+        let chunks = hasText && format !== 'rich' ? chunk(text, limit, mode) : []
+
         // LOCAL PATCH: rich messages (Bot API 10.1) take GitHub-flavored
-        // Markdown up to 32768 characters. If Telegram rejects one, fall back
-        // to plain text chunks below rather than losing the reply.
-        let richError: string | undefined
-        if (format === 'rich') {
-          const parts = chunk(expandTimes(rawText, 'rich'), RICH_LIMIT, 'newline')
+        // Markdown up to 32768 characters. If Telegram rejects one, the parts
+        // not sent yet go as plain text chunks below rather than being lost
+        // (the parts already sent are not repeated).
+        if (format === 'rich' && hasText) {
+          const parts = chunk(rawText, RICH_LIMIT, 'newline')
+          let i = 0
           try {
-            for (let i = 0; i < parts.length; i++) {
+            for (; i < parts.length; i++) {
               const shouldReplyTo = reply_to != null && replyMode !== 'off' && (replyMode === 'all' || i === 0)
-              const sent = await sendRich(chat_id, parts[i]!, shouldReplyTo ? reply_to : undefined, i === 0 ? takeEffect() : undefined)
+              const sent = await sendRich(chat_id, expandTimes(parts[i]!, 'rich'), shouldReplyTo ? reply_to : undefined, i === 0 ? takeEffect() : undefined)
               sentIds.push(sent.message_id)
             }
           } catch (err) {
-            richError = err instanceof Error ? err.message : String(err)
-            log.warn('rich reply failed, sending plain text', richError)
+            const richError = err instanceof Error ? err.message : String(err)
+            log.warn(`rich reply failed after ${i} of ${parts.length} part(s), sending the rest as plain text`, richError)
+            chunks = parts.slice(i).flatMap(p => chunk(expandTimes(p, 'text'), limit, mode))
           }
         }
 
-        const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
-        const mode = access.chunkMode ?? 'length'
-        const chunks = format === 'rich' && !richError ? [] : chunk(text, limit, mode)
-
+        const richSent = sentIds.length
         try {
           for (let i = 0; i < chunks.length; i++) {
+            // sentIds: after a rich part that already quoted reply_to, "first" is done.
             const shouldReplyTo =
               reply_to != null &&
               replyMode !== 'off' &&
-              (replyMode === 'all' || i === 0)
+              (replyMode === 'all' || sentIds.length === 0)
             const opts = {
               ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
               ...(parseMode ? { parse_mode: parseMode } : {}),
@@ -747,7 +769,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
           throw new Error(
-            `reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`,
+            `reply failed after ${sentIds.length - richSent} of ${chunks.length} chunk(s) sent: ${msg}`,
           )
         }
 
@@ -805,12 +827,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
         if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
         const buf = Buffer.from(await res.arrayBuffer())
-        // file_path is from Telegram (trusted), but strip to safe chars anyway
-        // so nothing downstream can be tricked by an unexpected extension.
-        const rawExt = file.file_path.includes('.') ? file.file_path.split('.').pop()! : 'bin'
-        const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
-        const uniqueId = (file.file_unique_id ?? '').replace(/[^a-zA-Z0-9_-]/g, '') || 'dl'
-        const path = join(INBOX_DIR, `${Date.now()}-${uniqueId}.${ext}`)
+        const path = inboxPath(file.file_path, file.file_unique_id, 'bin')
         mkdirSync(INBOX_DIR, { recursive: true })
         writeFileSync(path, buf)
         return { content: [{ type: 'text', text: path }] }
@@ -1363,6 +1380,21 @@ function askKeyboard(rec: AskRecord, qi: number): InlineKeyboard {
   return kb
 }
 
+// Presses on one question set are handled one at a time: routed updates
+// arrive concurrently, and two presses reading the same record would lose an
+// answer or deliver the answers twice.
+const askQueues = new Map<string, Promise<void>>()
+
+function serializeAsk(id: string, fn: () => Promise<void>): Promise<void> {
+  const run = (askQueues.get(id) ?? Promise.resolve()).then(fn)
+  const tail = run.catch(() => {})
+  askQueues.set(id, tail)
+  void tail.then(() => {
+    if (askQueues.get(id) === tail) askQueues.delete(id)
+  })
+  return run
+}
+
 bot.callbackQuery(/^ask:/, async ctx => {
   const m = /^ask:([0-9a-f]{8}):(\d+):(\d+|d)$/.exec(ctx.callbackQuery.data)
   const access = loadAccess()
@@ -1371,50 +1403,64 @@ bot.callbackQuery(/^ask:/, async ctx => {
     await ctx.answerCallbackQuery({ text: m ? t('notAuthorized') : undefined }).catch(() => {})
     return
   }
-  const file = join(STATE_DIR, 'ask', `${m[1]}.json`)
-  let rec: AskRecord
-  try {
-    rec = JSON.parse(readFileSync(file, 'utf8'))
-  } catch {
-    await ctx.answerCallbackQuery({ text: t('askExpired') }).catch(() => {})
-    return
-  }
-  const qi = Number(m[2])
-  const q = rec.questions[qi]
-  if (!q || q.done || rec.delivered) {
-    await ctx.answerCallbackQuery({ text: t('askAnswered') }).catch(() => {})
-    return
-  }
-  const choice = m[3]!
-  if (choice !== 'd') {
-    const oi = Number(choice)
-    if (!(oi >= 0 && oi < q.options.length)) {
+  await serializeAsk(m[1]!, async () => {
+    const file = join(STATE_DIR, 'ask', `${m[1]}.json`)
+    let rec: AskRecord
+    try {
+      rec = JSON.parse(readFileSync(file, 'utf8'))
+    } catch {
+      await ctx.answerCallbackQuery({ text: t('askExpired') }).catch(() => {})
+      return
+    }
+    const qi = Number(m[2])
+    const q = rec.questions[qi]
+    if (!q || q.done || rec.delivered) {
+      await ctx.answerCallbackQuery({ text: t('askAnswered') }).catch(() => {})
+      return
+    }
+    const choice = m[3]!
+    if (choice !== 'd') {
+      const oi = Number(choice)
+      if (!(oi >= 0 && oi < q.options.length)) {
+        await ctx.answerCallbackQuery().catch(() => {})
+        return
+      }
+      if (q.multiSelect) {
+        q.selected = q.selected.includes(oi) ? q.selected.filter(x => x !== oi) : [...q.selected, oi].sort((a, b) => a - b)
+      } else {
+        q.selected = [oi]
+        q.done = true
+      }
+    } else {
+      q.done = true
+    }
+    const deliver = rec.questions.every(x => x.done) && !rec.delivered
+    if (deliver) rec.delivered = true
+
+    // Save before any network call, so the next press (waiting behind this
+    // one) sees this answer, and only one press ever delivers.
+    try {
+      const tmp = `${file}.tmp`
+      writeFileSync(tmp, JSON.stringify(rec))
+      renameSync(tmp, file)
+    } catch (err) {
+      log.warn(`could not save ${file}, answer dropped`, err)
       await ctx.answerCallbackQuery().catch(() => {})
       return
     }
-    if (q.multiSelect) {
-      q.selected = q.selected.includes(oi) ? q.selected.filter(x => x !== oi) : [...q.selected, oi].sort((a, b) => a - b)
-    } else {
-      q.selected = [oi]
-      q.done = true
-    }
-  } else {
-    q.done = true
-  }
 
-  const chosen = q.selected.map(i => q.options[i]).join(', ') || t('askNone')
-  // Update this question's message in every chat it was posted to.
-  for (const [chatId, msgId] of Object.entries(q.messages)) {
-    if (q.done) {
-      await bot.api.editMessageText(chatId, msgId, `${q.text}\n\n✅ ${chosen}`).catch(() => {})
-    } else {
-      await bot.api.editMessageReplyMarkup(chatId, msgId, { reply_markup: askKeyboard(rec, qi) }).catch(() => {})
+    const chosen = q.selected.map(i => q.options[i]).join(', ') || t('askNone')
+    // Update this question's message in every chat it was posted to.
+    for (const [chatId, msgId] of Object.entries(q.messages)) {
+      if (q.done) {
+        await bot.api.editMessageText(chatId, msgId, `${q.text}\n\n✅ ${chosen}`).catch(() => {})
+      } else {
+        await bot.api.editMessageReplyMarkup(chatId, msgId, { reply_markup: askKeyboard(rec, qi) }).catch(() => {})
+      }
     }
-  }
-  await ctx.answerCallbackQuery({ text: q.done ? t('askSelected', { choice: chosen }) : undefined }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: q.done ? t('askSelected', { choice: chosen }) : undefined }).catch(() => {})
 
-  if (rec.questions.every(x => x.done) && !rec.delivered) {
-    rec.delivered = true
+    if (!deliver) return
     const lines = ['Answers to your questions (picked in Telegram):']
     rec.questions.forEach((x, i) => {
       const picked = x.selected.map(j => x.options[j]).join(', ') || '(none)'
@@ -1436,12 +1482,7 @@ bot.callbackQuery(/^ask:/, async ctx => {
     }).catch(err => {
       log.warn('failed to deliver answers to Claude', err)
     })
-  }
-  try {
-    writeFileSync(file, JSON.stringify(rec))
-  } catch (err) {
-    ignored(`write ${file}`, err)
-  }
+  })
 })
 
 handlePermissionButtons(mcp, bot, loadAccess)
@@ -1463,9 +1504,12 @@ bot.on('message:photo', async ctx => {
       if (!file.file_path) return undefined
       const url = `${API_ROOT}/file/bot${TOKEN}/${file.file_path}`
       const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
+      if (!res.ok) {
+        log.warn(`photo download failed: HTTP ${res.status}`)
+        return undefined
+      }
       const buf = Buffer.from(await res.arrayBuffer())
-      const ext = file.file_path.split('.').pop() ?? 'jpg'
-      const path = join(INBOX_DIR, `${Date.now()}-${best.file_unique_id}.${ext}`)
+      const path = inboxPath(file.file_path, best.file_unique_id, 'jpg')
       mkdirSync(INBOX_DIR, { recursive: true })
       writeFileSync(path, buf)
       return path
@@ -1578,10 +1622,12 @@ async function handleInbound(
 
   // Permission-reply intercept: if this looks like "yes xxxxx" for a
   // pending permission request, emit the structured event instead of
-  // relaying as chat. The sender is already gate()-approved at this point
-  // (non-allowlisted senders were dropped above), so we trust the reply.
+  // relaying as chat. Like the permission buttons, only senders in the
+  // global allowFrom may answer: gate() also lets through group members
+  // allowed only by that group's allowFrom, and for them the text is an
+  // ordinary message.
   const permMatch = PERMISSION_REPLY_RE.exec(text)
-  if (permMatch) {
+  if (permMatch && access.allowFrom.includes(String(from.id))) {
     void mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: {
@@ -1899,7 +1945,9 @@ function noteReceived(chat: string, id: number): void {
     setReaction(a, '✍')
     return
   }
-  waitingAcks = [...waitingAcks.filter(x => x.chat === chat), a].slice(-20)
+  // At most 20 waiting per chat and 100 in all; other chats' acks stay.
+  const mine = [...waitingAcks.filter(x => x.chat === chat), a].slice(-20)
+  waitingAcks = [...waitingAcks.filter(x => x.chat !== chat), ...mine].slice(-100)
   setReaction(a, '👀')
 }
 
@@ -2102,8 +2150,8 @@ bot.on('message_reaction', async ctx => {
 // LOCAL PATCH: quick buttons under the latest reply (see attachQuick).
 bot.callbackQuery(/^qr:/, async ctx => {
   const m = /^qr:(\d+):(\d+|more)$/.exec(ctx.callbackQuery.data)
-  const gated = dmCommandGate(ctx)
-  if (!m || !gated?.access.allowFrom.includes(gated.senderId)) {
+  const gated = buttonGate(ctx)
+  if (!m || !gated) {
     await ctx.answerCallbackQuery({ text: m ? t('notAuthorized') : undefined }).catch(() => {})
     return
   }
@@ -2131,8 +2179,7 @@ bot.callbackQuery('qr:done', ctx => ctx.answerCallbackQuery().catch(() => {}))
 
 // LOCAL PATCH: ⏹ Stop on the status message interrupts the session.
 bot.callbackQuery('stop:run', async ctx => {
-  const gated = dmCommandGate(ctx)
-  if (!gated?.access.allowFrom.includes(gated.senderId)) {
+  if (!buttonGate(ctx)) {
     await ctx.answerCallbackQuery({ text: t('notAuthorized') }).catch(() => {})
     return
   }
@@ -2209,6 +2256,8 @@ if (channelMode.poll && !routed) void (async () => {
 // Reconnects every 2s, so the router can restart without losing sessions.
 function connectRouter(): void {
   let buf = ''
+  // Streaming, so a character split across two chunks is not mangled.
+  const decoder = new TextDecoder()
   const retry = () => {
     if (!shuttingDown) setTimeout(connectRouter, 2000)
   }
@@ -2221,7 +2270,7 @@ function connectRouter(): void {
         log.info(`connected to router as ${SLOT}`)
       },
       data(_sock, chunk) {
-        buf += chunk.toString()
+        buf += decoder.decode(chunk, { stream: true })
         for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
           const line = buf.slice(0, i)
           buf = buf.slice(i + 1)

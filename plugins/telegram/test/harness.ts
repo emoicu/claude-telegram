@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 export type Call = { method: string; body: Record<string, any>; result?: any }
+type Failure = { error_code: number; description: string; parameters?: Record<string, unknown> }
 
 const BOT = { id: 999000, is_bot: true, first_name: 'Test', username: 'test_bot' }
 
@@ -18,7 +19,8 @@ export class FakeTelegram {
   private nextUpdate = 1
   private nextMessage = 5000
   private pollers: (() => void)[] = []
-  private failures = new Map<string, { error_code: number; description: string; parameters?: Record<string, unknown> }[]>()
+  private failures = new Map<string, (Failure | null)[]>()
+  private files = new Map<string, { file_path: string; file_unique_id: string; content?: string }>()
   private server: ReturnType<typeof Bun.serve>
 
   constructor() {
@@ -34,9 +36,9 @@ export class FakeTelegram {
     this.server.stop(true)
   }
 
-  /** Queue an update (update_id is filled in). */
+  /** Queue an update (update_id is filled in unless given). */
   push(update: Record<string, unknown>): void {
-    this.updates.push({ update_id: this.nextUpdate++, ...update })
+    this.updates.push({ ...update, update_id: update.update_id ?? this.nextUpdate++ })
     for (const wake of this.pollers.splice(0)) wake()
   }
 
@@ -56,22 +58,57 @@ export class FakeTelegram {
     return message_id
   }
 
-  /** A press on an inline button of message `messageId`. */
-  press(user: number, data: string, messageId: number, text = ''): void {
+  /** A message from `user` in group `chat`. */
+  group(chat: number, user: number, text: string, extra: Record<string, unknown> = {}): number {
+    const message_id = this.nextMessage++
     this.push({
+      message: {
+        message_id,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: chat, type: 'supergroup', title: `G${chat}` },
+        from: { id: user, is_bot: false, first_name: `U${user}`, username: `u${user}` },
+        text,
+        ...extra,
+      },
+    })
+    return message_id
+  }
+
+  /** A press on an inline button of message `messageId` (in the user's DM, or in group `chat`). */
+  press(user: number, data: string, messageId: number, text = '', chat?: number): void {
+    this.push(this.pressUpdate(user, data, messageId, text, chat))
+  }
+
+  /** The callback_query update of a press, for sending it some other way (a fake router). */
+  pressUpdate(user: number, data: string, messageId: number, text = '', chat?: number): Record<string, unknown> {
+    return {
+      update_id: this.nextUpdate++,
       callback_query: {
         id: `cb${this.nextUpdate}`,
         from: { id: user, is_bot: false, first_name: `U${user}` },
         chat_instance: '1',
         data,
-        message: { message_id: messageId, date: 0, chat: { id: user, type: 'private' }, text },
+        message: {
+          message_id: messageId,
+          date: 0,
+          chat: chat == null ? { id: user, type: 'private' } : { id: chat, type: 'supergroup', title: `G${chat}` },
+          text,
+        },
       },
-    })
+    }
   }
 
-  /** Answer the next calls of `method` with these errors, in order. */
-  failNext(method: string, ...errors: { error_code: number; description: string; parameters?: Record<string, unknown> }[]): void {
+  /**
+   * Answer the next calls of `method` with these errors, in order; a null
+   * lets that call through.
+   */
+  failNext(method: string, ...errors: (Failure | null)[]): void {
     this.failures.set(method, [...(this.failures.get(method) ?? []), ...errors])
+  }
+
+  /** What getFile returns for `file_id`; `content` is served for download, none answers 404. */
+  serveFile(file_id: string, file: { file_path: string; file_unique_id: string; content?: string }): void {
+    this.files.set(file_id, file)
   }
 
   sent(method?: string | RegExp): Call[] {
@@ -90,7 +127,14 @@ export class FakeTelegram {
   }
 
   private async handle(req: Request): Promise<Response> {
-    const m = /\/bot[^/]+\/(\w+)$/.exec(new URL(req.url).pathname)
+    const pathname = new URL(req.url).pathname
+    const download = /^\/file\/bot[^/]+\/(.+)$/.exec(pathname)
+    if (download) {
+      this.calls.push({ method: 'download', body: { file_path: download[1] } })
+      const file = [...this.files.values()].find(f => f.file_path === download[1] && f.content != null)
+      return file ? new Response(file.content) : new Response('Not Found', { status: 404 })
+    }
+    const m = /\/bot[^/]+\/(\w+)$/.exec(pathname)
     if (!m) return Response.json({ ok: false, error_code: 404, description: 'Not Found' }, { status: 404 })
     const method = m[1]!
     let body: Record<string, any> = {}
@@ -114,6 +158,10 @@ export class FakeTelegram {
     switch (method) {
       case 'getMe':
         return BOT
+      case 'getFile': {
+        const file = this.files.get(String(body.file_id))
+        return file ? { file_id: body.file_id, file_unique_id: file.file_unique_id, file_path: file.file_path } : { file_id: body.file_id, file_unique_id: 'u' }
+      }
       case 'getUpdates': {
         const offset = Number(body.offset ?? 0)
         this.updates = this.updates.filter(u => u.update_id >= offset)
@@ -261,14 +309,19 @@ export class Channel {
     this.write({ method, params })
   }
 
-  /** MCP handshake, then wait until the bot polls Telegram. */
-  async start(tg: FakeTelegram): Promise<void> {
+  /** The MCP handshake only (a server that does not poll Telegram). */
+  async handshake(): Promise<void> {
     await this.request('initialize', {
       protocolVersion: '2025-06-18',
       capabilities: {},
       clientInfo: { name: 'e2e', version: '1' },
     })
     this.notify('notifications/initialized')
+  }
+
+  /** MCP handshake, then wait until the bot polls Telegram. */
+  async start(tg: FakeTelegram): Promise<void> {
+    await this.handshake()
     await tg.waitFor(c => c.method === 'setMyCommands' || c.method === 'deleteWebhook', 'bot start', 10_000)
     await Bun.sleep(200)
   }

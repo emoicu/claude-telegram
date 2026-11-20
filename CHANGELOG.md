@@ -2,6 +2,13 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.5.1] - 2026-11-20
+
+### Fixed
+
+- A message that woke a stopped session could be lost: a session resumed after its last turn was cut off dropped the channel message it got while starting. For messages handed to Claude in the first 90 seconds after the server starts, the server now checks the session transcript 10 seconds later and hands the message over once more if it is not there. Nothing is resent when the transcript cannot be read.
+- Every message handed to Claude is logged with its id, so a lost one shows where it went missing.
+
 ## [1.5.0] - 2026-11-20
 
 ### Added
@@ -125,6 +132,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.5.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.5.1
 [1.5.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.5.0
 [1.4.3]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.3
 [1.4.2]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.2

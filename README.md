@@ -5,7 +5,7 @@
 **Drive Claude Code from Telegram: chat with your sessions, watch them work, and steer them from your phone.**
 
 [![test](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml)
-[![version](https://img.shields.io/badge/version-1.5.0-blue)](plugins/telegram/.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-1.5.1-blue)](plugins/telegram/.claude-plugin/plugin.json)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-channel%20plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
@@ -222,6 +222,7 @@ Based on upstream plugin v0.0.7 (commit `b5b01ac`); the latest upstream change t
 - **Albums**: when `reply` attaches two or more photos (or two or more documents), they go as one album of up to 10 instead of one message each.
 - **Message effects**: in direct messages, the reply right after a progress checklist finishes plays 🎉; `reply` also takes `effect` (🎉 🔥 👍 ❤️, or `none` to skip). If Telegram rejects an effect the message is sent without it.
 - **Rich replies**: `reply` and `edit_message` accept `format: "rich"`, sent as a Bot API 10.1 rich message written in GitHub-flavored Markdown (tables, fenced code, task lists, collapsible `<details>`), up to 32768 characters per message. A table with long rows is sent as a list instead (see `TELEGRAM_TABLE_MAX_WIDTH`), because a phone squeezes it into narrow columns. If Telegram rejects it, the text goes out as plain chunks instead.
+- **Delivery check**: a session that is still starting has been seen to drop a channel message (one resumed after its last turn was cut off). For messages handed to Claude in the first 90 seconds after the server starts, the server looks for the message in the session transcript 10 seconds later (`TELEGRAM_DELIVERY_CHECK_MS`) and hands it over once more if it is missing. Each message handed over is logged with its id.
 - **Leveled logs**: the server and router log with a time and level to stderr and to `logs/server-<slot>.log` and `router/router.log` in the state directory (rotated at 1 MiB, bot tokens redacted). Errors the code deliberately carries on after are logged too: a missing file at debug level, anything else as a warning. Set `TELEGRAM_LOG_LEVEL` to change the level.
 - **Inbox cleanup**: downloaded photos and files in `inbox/` older than `TELEGRAM_INBOX_KEEP_DAYS` (default 30, `0` keeps everything) are deleted at startup and every six hours.
 - **Progress checklists**: a `progress` tool posts a task checklist (rich task list, plain text as a fallback) and edits that one message as steps start and finish, instead of sending new messages. Claude passes the whole step list each call (`todo`, `doing`, `done`, `failed`, `skipped`); a call after everything is done, or with `new: true`, starts a fresh one. The current checklist per chat is kept in `progress.json` in the state directory, so a restarted session keeps editing it.

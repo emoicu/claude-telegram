@@ -31,6 +31,7 @@ import {
   cancelScheduled, deliverDue, describeScheduled, listScheduled, MAX_PER_CHAT, MAX_TEXT, newId, parseWhen, type Repeat,
   saveScheduled, scheduleDir, scheduledSender,
 } from './lib/schedule.ts'
+import { channelMarker, inStartupWindow } from './lib/delivery.ts'
 import { envDuration, Holds } from './lib/holds.ts'
 import { addPoll, describeAnswer, MAX_POLL_OPTIONS, type PollRecord } from './lib/polls.ts'
 import { bare, DEFAULT_LABELS, mergeShortcuts, PAUSE_REACTION, QUICK_FIRST, type Shortcut } from './lib/shortcuts.ts'
@@ -1637,7 +1638,7 @@ async function handleInbound(
 
   // image_path goes in meta only — an in-content "[image attached — read: PATH]"
   // annotation is forgeable by any allowlisted sender typing that string.
-  mcp.notification({
+  const notification = {
     method: 'notifications/claude/channel',
     params: {
       content: text,
@@ -1663,9 +1664,43 @@ async function handleInbound(
         } : {}),
       },
     },
-  }).catch(err => {
-    log.warn('failed to deliver inbound to Claude', err)
-  })
+  }
+  deliverInbound(notification, chat_id, msgId)
+}
+
+// LOCAL PATCH: delivery check (lib/delivery.ts). A session that is still
+// starting has been seen to drop a channel message (one resumed after its
+// last turn was cut off). For messages handed over in the first
+// DELIVERY_WINDOW_MS, look for the message in the transcript a little later
+// and hand it over once more if it is not there. If the transcript cannot be
+// read, nothing is resent.
+const SERVER_STARTED_AT = Date.now()
+const DELIVERY_WINDOW_MS = 90_000
+const DELIVERY_CHECK_MS = Number(process.env.TELEGRAM_DELIVERY_CHECK_MS ?? 10_000)
+
+function deliverInbound(notification: { method: string; params: { content: string; meta: Record<string, string> } }, chat_id: string, msgId: number | undefined): void {
+  const send = () =>
+    mcp.notification(notification).catch(err => {
+      log.warn('failed to deliver inbound to Claude', err)
+    })
+  void send()
+  log.info(`handed message ${msgId ?? '?'} in ${chat_id} to Claude`)
+  if (msgId == null || !inStartupWindow(SERVER_STARTED_AT, Date.now(), DELIVERY_WINDOW_MS)) return
+  setTimeout(() => {
+    const sid = readClaudeSession()?.sessionId
+    const path = sid ? findTranscript(sid) : undefined
+    if (!path) return
+    let tail: string
+    try {
+      tail = readTail(path)
+    } catch (err) {
+      ignored('read the transcript to check a delivery', err)
+      return
+    }
+    if (tail.includes(channelMarker(chat_id, msgId))) return
+    log.warn(`message ${msgId} in ${chat_id} is not in Claude's transcript ${DELIVERY_CHECK_MS / 1000}s after handing it over; handing it over again`)
+    void send()
+  }, DELIVERY_CHECK_MS)
 }
 
 // LOCAL PATCH: live work status. Telegram's typing indicator lasts ~5s, so

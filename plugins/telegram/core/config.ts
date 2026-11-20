@@ -62,7 +62,11 @@ const PID_FILE = join(STATE_DIR, 'bot.pid')
 // ancestor is found we fall back to polling (upstream behaviour).
 function detectChannelMode(): { poll: boolean; reason: string; claudePid?: number } {
   const override = process.env.TELEGRAM_CHANNEL_MODE
-  if (override === 'always') return { poll: true, reason: 'TELEGRAM_CHANNEL_MODE=always' }
+  if (override === 'always') {
+    // TELEGRAM_CLAUDE_PID names the owning Claude Code process when it cannot be found (tests).
+    const pid = Number(process.env.TELEGRAM_CLAUDE_PID) || undefined
+    return { poll: true, reason: 'TELEGRAM_CHANNEL_MODE=always', ...(pid ? { claudePid: pid } : {}) }
+  }
   if (override === 'never') return { poll: false, reason: 'TELEGRAM_CHANNEL_MODE=never' }
   let pid = process.ppid
   for (let depth = 0; depth < 12 && pid > 1; depth++) {

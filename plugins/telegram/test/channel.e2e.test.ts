@@ -447,3 +447,49 @@ describe('command menu', () => {
     expect((await menu()).body.commands.map((c: any) => c.command)).not.toContain('sessions')
   })
 })
+
+describe('delivery check', () => {
+  const SID = '11111111-2222-3333-4444-555555555555'
+  const PID = '424242'
+  /** A Claude session file and transcript the server can find. */
+  function fakeSession(): string {
+    const dir = join(ch.stateDir, 'claude-config')
+    mkdirSync(join(dir, 'sessions'), { recursive: true })
+    mkdirSync(join(dir, 'projects', 'p'), { recursive: true })
+    writeFileSync(join(dir, 'sessions', `${PID}.json`), JSON.stringify({ sessionId: SID, status: 'idle' }))
+    const transcript = join(dir, 'projects', 'p', `${SID}.jsonl`)
+    writeFileSync(transcript, '')
+    return transcript
+  }
+  const count = (text: string) => ch.notifications.filter(n => n.method === 'notifications/claude/channel' && n.params?.content === text).length
+  const env = { TELEGRAM_CLAUDE_PID: PID, TELEGRAM_DELIVERY_CHECK_MS: '300' }
+
+  test('a message missing from the transcript is handed over once more', async () => {
+    await boot(allowlist, env)
+    fakeSession()
+    tg.dm(OWNER, 'lost one')
+    await ch.waitNotification('notifications/claude/channel', p => p.content === 'lost one')
+    await Bun.sleep(900)
+    expect(count('lost one')).toBe(2)
+  })
+
+  test('a message found in the transcript is not handed over again', async () => {
+    await boot(allowlist, env)
+    const transcript = fakeSession()
+    const id = tg.dm(OWNER, 'arrived')
+    const n = await ch.waitNotification('notifications/claude/channel', p => p.content === 'arrived')
+    // What Claude Code writes when it accepts the message.
+    const tag = `<channel source="plugin:telegram:telegram" chat_id="${n.meta.chat_id}" message_id="${id}" user="u">\narrived\n</channel>`
+    writeFileSync(transcript, `${JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: tag })}\n`)
+    await Bun.sleep(900)
+    expect(count('arrived')).toBe(1)
+  })
+
+  test('nothing is resent when the transcript cannot be found', async () => {
+    await boot(allowlist, env)
+    tg.dm(OWNER, 'unknown')
+    await ch.waitNotification('notifications/claude/channel', p => p.content === 'unknown')
+    await Bun.sleep(900)
+    expect(count('unknown')).toBe(1)
+  })
+})

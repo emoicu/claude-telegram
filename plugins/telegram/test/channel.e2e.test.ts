@@ -97,6 +97,15 @@ describe('tools', () => {
     expect(textOf(call)).toBe('**PRs**\n- \\#1 merged\n# Real heading')
   })
 
+  test('a rich reply turns a wide table into a list and keeps a narrow one', async () => {
+    await boot(allowlist)
+    const narrow = '| | now | later |\n| --- | --- | --- |\n| router | 10 min | 30 s |'
+    const wide = '| Script | What it does |\n| --- | --- |\n| claude-tg.sh | ' + 'keeps the router running, '.repeat(3) + '|'
+    await ch.tool('reply', { chat_id: String(OWNER), text: `**Tables**\n\n${narrow}\n\n${wide}`, format: 'rich' })
+    const call = await tg.waitFor(c => c.method === 'sendRichMessage' && /Tables/.test(textOf(c)), 'rich reply')
+    expect(textOf(call)).toBe(`**Tables**\n\n${narrow}\n\n- **claude-tg.sh**: ${'keeps the router running, '.repeat(3).trim()}`)
+  })
+
   test('reply refuses chats that are not allowlisted', async () => {
     await boot(allowlist)
     await expect(ch.tool('reply', { chat_id: String(STRANGER), text: 'leak' })).rejects.toThrow(/not allowlisted/)

@@ -85,6 +85,90 @@ export function escapeTightHashes(md: string): string {
     .join('\n')
 }
 
+/** Width of text on screen: CJK, full-width forms and emoji take two columns. */
+export function displayWidth(s: string): number {
+  const plain = s
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // [text](url) shows text
+    .replace(/\*\*|__|~~|`/g, '')
+  let w = 0
+  for (const ch of plain) {
+    if (ch === '\u{FE0F}' || ch === '\u{200D}') continue
+    w += /[\u{1100}-\u{115F}\u{2E80}-\u{A4CF}\u{AC00}-\u{D7A3}\u{F900}-\u{FAFF}\u{FE30}-\u{FE4F}\u{FF00}-\u{FF60}\u{FFE0}-\u{FFE6}]|\p{Extended_Pictographic}/u.test(ch) ? 2 : 1
+  }
+  return w
+}
+
+const TABLE_DELIM = /^ {0,3}\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
+
+/** The cells of a table row; an escaped pipe (\\|) stays inside its cell. */
+function tableCells(line: string): string[] {
+  const body = line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '')
+  return body.split(/(?<!\\)\|/).map(c => c.trim())
+}
+
+/**
+ * A Markdown table is drawn on a phone at the screen's width, so rows with a
+ * lot of text get squeezed into narrow, hard-to-read columns. Rewrite each
+ * table whose widest row (summed cell widths, see displayWidth) is over
+ * maxWidth as a list: "- **first cell**: second cell" for two columns, the
+ * other cells as "header: cell" sub-items for more. maxWidth 0 keeps every
+ * table. Tables inside fenced code are left alone.
+ */
+export function narrowTables(md: string, maxWidth: number): string {
+  if (maxWidth <= 0 || !md.includes('|')) return md
+  const lines = md.split('\n')
+  const out: string[] = []
+  let fence: string | undefined
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const f = /^\s*(`{3,}|~{3,})/.exec(line)
+    if (f) {
+      const ch = f[1]![0]!
+      if (!fence) fence = ch
+      else if (ch === fence) fence = undefined
+    }
+    const next = lines[i + 1]
+    if (fence || f || !/^ {0,3}\S/.test(line) || !line.includes('|') || next === undefined || !TABLE_DELIM.test(next)) {
+      out.push(line)
+      continue
+    }
+    const header = tableCells(line)
+    if (tableCells(next).length !== header.length) {
+      out.push(line)
+      continue
+    }
+    let end = i + 2
+    while (end < lines.length && lines[end]!.includes('|') && lines[end]!.trim() !== '') end++
+    const rows = lines.slice(i + 2, end).map(tableCells)
+    const widest = Math.max(...[header, ...rows].map(r => r.reduce((sum, c) => sum + displayWidth(c), 0)))
+    if (widest <= maxWidth) {
+      out.push(...lines.slice(i, end))
+      i = end - 1
+      continue
+    }
+    const bold = (c: string) => (c.includes('**') ? c : `**${c}**`)
+    // A CJK header takes a full-width colon: "现在：10 分钟", "Now: 10 min".
+    const colon = (h: string) => (displayWidth(h.slice(-1)) === 2 ? '：' : ': ')
+    const labelled = (h: string | undefined, c: string) => (h ? `${h}${colon(h)}${c}` : c)
+    for (const row of rows) {
+      const [first = '', ...rest] = header.map((_, k) => row[k] ?? '')
+      const others = rest.map((c, k) => [header[k + 1], c] as const).filter(([, c]) => c)
+      if (!first) {
+        for (const [h, c] of others) out.push(`- ${labelled(h, c)}`)
+      } else if (others.length === 0) {
+        out.push(`- ${first}`)
+      } else if (header.length === 2) {
+        out.push(`- ${bold(first)}${colon(first.replace(/\*\*$/, ''))}${others[0]![1]}`)
+      } else {
+        out.push(`- ${bold(first)}`)
+        for (const [h, c] of others) out.push(`  - ${labelled(h, c)}`)
+      }
+    }
+    i = end - 1
+  }
+  return out.join('\n')
+}
+
 export type Step = { text: string; state: 'todo' | 'doing' | 'done' | 'failed' | 'skipped' }
 
 export function renderChecklist(title: string | undefined, steps: Step[], started: number, rich: boolean, t: T = tEn): string {

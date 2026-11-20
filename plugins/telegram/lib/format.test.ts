@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  chunk, clip, describeTool, escapeTightHashes, expandTimes, fmtDuration, fmtElapsed, fmtTokens, mdSpaced, parseTime, plainMarkdown, renderChecklist,
+  chunk, clip, describeTool, displayWidth, escapeTightHashes, expandTimes, fmtDuration, fmtElapsed, fmtTokens, mdSpaced, narrowTables, parseTime, plainMarkdown, renderChecklist,
   renderDraft, renderStatus, safeName,
 } from './format.ts'
 import { isNewer } from './version.ts'
@@ -148,5 +148,37 @@ describe('escapeTightHashes', () => {
   test('leaves real headings, # inside a line, escaped ones and code alone', () => {
     const md = '# Title\n## Sub\n- PR #5\n\\#7 done\n```bash\n#comment\n```\n~~~\n#x\n~~~'
     expect(escapeTightHashes(md)).toBe(md)
+  })
+})
+
+describe('narrowTables', () => {
+  const wide = '| Script | What it does | Used |\n| --- | --- | --- |\n| claude-tg.sh | 守护脚本：运行路由器，退出后 5 秒重启它 | ✅ always |\n| tgctl | | no |'
+  test('turns a table with long rows into a list', () => {
+    expect(narrowTables(wide, 50)).toBe('- **claude-tg.sh**\n  - What it does: 守护脚本：运行路由器，退出后 5 秒重启它\n  - Used: ✅ always\n- **tgctl**\n  - Used: no')
+  })
+  test('two columns become "first: second"', () => {
+    const md = 'Intro\n\n|a|b|\n|:-|-:|\n|`x`|' + 'long text '.repeat(6) + '|\n\nafter'
+    expect(narrowTables(md, 40)).toBe('Intro\n\n- **`x`**: ' + 'long text '.repeat(6).trim() + '\n\nafter')
+  })
+  test('keeps narrow tables, tables in code and everything when maxWidth is 0', () => {
+    const small = '| | now | later |\n| --- | --- | --- |\n| router | 10 min | 30 s |'
+    expect(narrowTables(small, 50)).toBe(small)
+    expect(narrowTables('```\n' + wide + '\n```', 50)).toBe('```\n' + wide + '\n```')
+    expect(narrowTables(wide, 0)).toBe(wide)
+    expect(narrowTables('a | b\nnot a table', 1)).toBe('a | b\nnot a table')
+  })
+  test('a CJK header or first cell takes a full-width colon', () => {
+    expect(narrowTables('| | 现在 |\n|---|---|\n| 路由器 | ' + '最长十分钟'.repeat(5) + ' |', 20)).toBe('- **路由器**：' + '最长十分钟'.repeat(5))
+    expect(narrowTables('| a | 现在 | 改后 |\n|---|---|---|\n| x | ' + '十'.repeat(30) + ' | y |', 20)).toBe('- **x**\n  - 现在：' + '十'.repeat(30) + '\n  - 改后：y')
+  })
+
+  test('an escaped pipe stays in its cell; bold first cells are not bolded twice', () => {
+    expect(narrowTables('| k | v |\n|---|---|\n| **a\\|b** | ' + 'x'.repeat(30) + ' |', 20)).toBe('- **a\\|b**: ' + 'x'.repeat(30))
+  })
+  test('displayWidth counts CJK and emoji as two columns and ignores markup', () => {
+    expect(displayWidth('ab')).toBe(2)
+    expect(displayWidth('路由器')).toBe(6)
+    expect(displayWidth('✅')).toBe(2)
+    expect(displayWidth('**[x](http://e.com)** `y`')).toBe(3)
   })
 })

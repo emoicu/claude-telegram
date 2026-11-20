@@ -2,6 +2,12 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.4.3] - 2026-11-20
+
+### Changed
+
+- Rich replies send a table as a list when its widest row is over 50 columns (CJK characters and emoji count two): on a phone, such a table was squeezed into narrow, hard-to-read columns. Two-column tables become `- **first**: second`, wider ones list the other cells as `header: cell` sub-items. Set the limit with `TELEGRAM_TABLE_MAX_WIDTH` (`0` keeps every table).
+
 ## [1.4.2] - 2026-11-20
 
 ### Changed
@@ -108,6 +114,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.4.3]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.3
 [1.4.2]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.2
 [1.4.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.1
 [1.4.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.0

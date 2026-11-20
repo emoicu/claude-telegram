@@ -9,6 +9,7 @@ import {
   describe,
   findPending,
   loadList,
+  markAnswered,
   matchRemembered,
   PENDING_TTL_MS,
   type PendingPrompt,
@@ -83,6 +84,26 @@ group('findPending', () => {
     expect(findPending(list, 'Bash', 'npm run test', 10)?.at).toBe(5)
     expect(findPending(list, 'Write', 'x', 10)).toBeUndefined()
   })
+  test('answered prompts are never matched again, not even by the fallback', () => {
+    const list = addPending([], prompt({ at: 5 }), 5)
+    const p = findPending(list, 'Bash', '{"command":"npm run test"}', 10)!
+    markAnswered(list, p, 11)
+    expect(list[0]!.answered).toBe(11)
+    expect(findPending(list, 'Bash', '{"command":"npm run test"}', 12)).toBeUndefined()
+    expect(findPending(list, 'Bash', 'formatted differently', 12)).toBeUndefined()
+    // A new prompt for the same tool is the only candidate left.
+    addPending(list, prompt({ at: 20, input: '{"command":"ls"}' }), 20)
+    expect(findPending(list, 'Bash', 'formatted differently', 21)?.at).toBe(20)
+    // The mark survives the store.
+    const file = join(mkdtempSync(join(tmpdir(), 'remember-test-')), 'pending-main.json')
+    saveList(file, list)
+    expect(findPending(loadList<PendingPrompt>(file), 'Bash', 'npm run test', 22)?.at).toBe(20)
+  })
+  test('markAnswered ignores a prompt that is not in the list', () => {
+    const list = addPending([], prompt({ at: 5 }), 5)
+    markAnswered(list, prompt({ at: 5 }), 6)
+    expect(list[0]!.answered).toBeUndefined()
+  })
   test('expired prompts are dropped', () => {
     const list = addPending([], prompt({ at: 0 }), 0)
     expect(findPending(list, 'Bash', '{"command":"npm run test"}', PENDING_TTL_MS)).toBeUndefined()
@@ -99,6 +120,15 @@ group('remembered answers', () => {
     expect(matchRemembered(list, 's1', 'Bash', later, [rule('npm run test *')], 1000)).toBeDefined()
     expect(matchRemembered(list, 's2', 'Bash', later, [rule('npm run test *')], 1000)).toBeUndefined()
     expect(matchRemembered(list, 's1', 'Bash', '{"command":"rm -rf /"}', [rule('rm -rf *')], 1000)).toBeUndefined()
+  })
+  test('an extra directory allowed for one tool does not allow another tool there', () => {
+    const read = prompt({ tool: 'Read', input: '{"file_path":"/etc/hosts"}', suggestions: [dirs('/etc')] })
+    const list = addRemembered([], read, 0)
+    expect(matchRemembered(list, 's1', 'Read', '{"file_path":"/etc/passwd"}', [dirs('/etc')], 1)).toBeDefined()
+    for (const tool of ['Write', 'Edit', 'Bash']) {
+      expect(matchRemembered(list, 's1', tool, '{"file_path":"/etc/passwd"}', [dirs('/etc')], 1)).toBeUndefined()
+    }
+    expect(promptKey('Read', '{}', [dirs('/etc')])).not.toBe(promptKey('Write', '{}', [dirs('/etc')]))
   })
   test('expire after a day and are not duplicated', () => {
     const list = addRemembered([], prompt(), 0)

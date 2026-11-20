@@ -2,6 +2,14 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.6.0] - 2026-11-20
+
+### Added
+
+- Running as a service: `install.sh --service` sets up two systemd user services that start at boot: `claude-telegram-tmux` holds the tmux session the sessions run in, and `claude-telegram` runs `service/supervisor.ts`, which keeps the router running from the installed plugin version. A version whose router fails three times right after starting is replaced by the last version that ran fine, with a Telegram notice, until another version is installed. The supervisor refuses to start beside another supervisor or router, makes sure the tmux session exists, and is copied out of the plugin; it updates itself from a plugin version that has run for 10 minutes, and its launcher (`service/launcher.sh`) puts the previous copy back if a new one keeps failing. Restarting the service leaves the sessions running. `install.sh --remove-service` removes it.
+- The router reads its settings from `.env` in the state directory too (the real environment wins), and sessions it starts use the bundled command helper unless `TELEGRAM_COMMAND_HELPER` is set.
+- End-to-end tests for the supervisor and launcher (`test/supervisor.e2e.test.ts`).
+
 ## [1.5.1] - 2026-11-20
 
 ### Fixed
@@ -132,6 +140,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.6.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.6.0
 [1.5.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.5.1
 [1.5.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.5.0
 [1.4.3]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.3

@@ -30,6 +30,9 @@
  *                               conversation gets the current plugin instructions; empty: Claude's default)
  *   TELEGRAM_ROUTER_SELF_UPDATE 1: exit once a newer version of this plugin is installed, for a
  *                               supervisor loop that restarts the router from the newest copy
+ *                               (service/supervisor.ts)
+ * These can also be set in the state dir's .env. Sessions get the TELEGRAM_* settings, and
+ * TELEGRAM_COMMAND_HELPER defaults to builtin there.
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -49,6 +52,16 @@ import { isNewer } from './lib/version.ts'
 
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(CLAUDE_DIR, 'channels', 'telegram')
+// Settings can live in the state dir's .env next to the token (real env
+// wins), so a service needs no wrapper script to set them.
+try {
+  for (const line of readFileSync(join(STATE_DIR, '.env'), 'utf8').split('\n')) {
+    const m = /^(\w+)=(.*)$/.exec(line)
+    if (m && process.env[m[1]!] === undefined) process.env[m[1]!] = m[2]!
+  }
+} catch {
+  // No .env: readToken() below says so if the token is missing too.
+}
 const ROUTER_DIR = join(STATE_DIR, 'router')
 /** Translator for what the router posts (/language). */
 const t = translator(STATE_DIR)
@@ -471,6 +484,9 @@ function sessionEnv(slot: Slot): Record<string, string> {
   }
   env.TELEGRAM_ROUTER_SOCKET = SOCKET
   env.TELEGRAM_SLOT = slot.name
+  // Every session runs in a tmux window, so the bundled helper can serve
+  // /new, /usage, /model and /effort.
+  env.TELEGRAM_COMMAND_HELPER ??= 'builtin'
   if (slot.chat && slot.thread) {
     env.TELEGRAM_TOPIC_CHAT = slot.chat
     env.TELEGRAM_TOPIC_THREAD = String(slot.thread)

@@ -5,7 +5,7 @@
 **Drive Claude Code from Telegram: chat with your sessions, watch them work, and steer them from your phone.**
 
 [![test](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/emoicu/claude-telegram/actions/workflows/test.yml)
-[![version](https://img.shields.io/badge/version-1.5.1-blue)](plugins/telegram/.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-1.6.0-blue)](plugins/telegram/.claude-plugin/plugin.json)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-channel%20plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
@@ -58,7 +58,7 @@ A personally maintained fork of the official [Claude Code Telegram channel plugi
 
 **1. Create a bot.** Message [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the token it gives you.
 
-**Shortcut:** steps 2–4 in one go, on Linux or macOS:
+**Shortcut:** steps 2–4 in one go, on Linux or macOS (add `-s -- --service` after `bash` to run it as a service on a server, see [Running as a service](#running-as-a-service)):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/emoicu/claude-telegram/main/scripts/install.sh | bash
@@ -144,7 +144,31 @@ tmux new-session -s claude 'bun ~/.claude/plugins/cache/emoicu-plugins/telegram/
 - A topic named like a folder in `TELEGRAM_ROUTER_PROJECTS` works in that folder
 - Closing a topic stops its session; `/sessions` lists them all
 
-Run it from a loop with `TELEGRAM_ROUTER_SELF_UPDATE=1` and it restarts from the newest installed copy after `claude plugin update`. All settings are documented in the header of [`router.ts`](plugins/telegram/router.ts).
+Run it from a loop with `TELEGRAM_ROUTER_SELF_UPDATE=1` and it restarts from the newest installed copy after `claude plugin update`, or let the service below do all of this. All settings are documented in the header of [`router.ts`](plugins/telegram/router.ts); they can also go in `~/.claude/channels/telegram/.env`, next to the token. Sessions started by the router handle `/new`, `/usage`, `/model` and `/effort` with the bundled helper unless `TELEGRAM_COMMAND_HELPER` says otherwise.
+
+### Running as a service
+
+On a Linux server with systemd, the install script can run the router around the clock:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/emoicu/claude-telegram/main/scripts/install.sh | bash -s -- --service
+```
+
+It asks which folder Claude works in (default `~/projects`, saved as `TELEGRAM_ROUTER_MAIN_CWD` in `.env`), and sets up two systemd user services that start at boot:
+
+- `claude-telegram-tmux` holds the tmux session `claude` the sessions run in (`tmux attach -t claude` to look at them)
+- `claude-telegram` runs a small supervisor that keeps the router running from the installed plugin version and starts it again from the new one after `claude plugin update`. When a new version's router fails three times right after starting, it goes back to the last version that ran fine and tells you on Telegram. It refuses to start while another router uses the bot.
+
+Restarting `claude-telegram` restarts the router only; the sessions keep running. The supervisor is copied out of the plugin (to `~/.claude/channels/telegram/service/`), so a broken plugin update cannot break it; it takes the newer copy from a plugin version only after that version has run for 10 minutes, and its launcher puts the previous copy back if the new one keeps failing. Enabling lingering (so the services start without logging in) may ask for your sudo password once.
+
+```sh
+systemctl --user status claude-telegram        # is it running?
+journalctl --user -u claude-telegram -f        # supervisor and router output
+systemctl --user restart claude-telegram       # restart the router
+bash install.sh --remove-service               # stop and remove both services (ends the sessions)
+```
+
+Without systemd (a container, WSL without systemd), `--service` prints the two tmux commands that start the same supervisor by hand.
 
 ## Configuration
 

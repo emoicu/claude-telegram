@@ -174,3 +174,57 @@ describe.skipIf(!HAS_TMUX)('/restart', () => {
     expect(tg.sent(/^send|^edit/).some(c => String(c.body.chat_id) === String(STRANGER))).toBe(false)
   }, 20_000)
 })
+
+describe.skipIf(!HAS_TMUX)('carrying on after an interrupted turn', () => {
+  const received = () => {
+    try {
+      return readFileSync(join(claudeDir, 'received.log'), 'utf8')
+    } catch {
+      return ''
+    }
+  }
+  const resumes = () => received().split('\n').filter(l => l.includes('"resume"'))
+  /** Kill the running fake Claude while it is busy, as a crash would. */
+  async function killMidTurn(): Promise<void> {
+    setStatus('busy')
+    await Bun.sleep(3500) // one tick sees it busy
+    process.kill(starts().at(-1)!.pid, 'SIGKILL')
+    setStatus('idle')
+  }
+
+  test('a session killed mid-turn comes back and is asked to carry on', async () => {
+    await killMidTurn()
+    await tg.waitFor(said(/stopped unexpectedly while Claude was working/), 'interrupted notice')
+    await until('a second start', () => starts()[1])
+    await tg.waitFor(said(/picking up where it left off/), 'carrying-on notice', 15_000)
+    const [line] = resumes()
+    const msg = JSON.parse(line!).resume
+    expect(msg.chat_id).toBe(String(OWNER))
+    expect(msg.text).toContain('Message from the Telegram router, not from the user')
+  }, 40_000)
+
+  test('cut off again soon after carrying on: it does not carry on again', async () => {
+    await killMidTurn()
+    await tg.waitFor(said(/picking up where it left off/), 'carrying-on notice', 20_000)
+    await killMidTurn()
+    await tg.waitFor(said(/cut off again soon after it carried on/), 'no-carry-on notice', 20_000)
+    await until('a third start', () => starts()[2])
+    await Bun.sleep(4000)
+    expect(resumes().length).toBe(1)
+  }, 60_000)
+
+  test('an idle session that dies is not asked to carry on', async () => {
+    process.kill(starts()[0]!.pid, 'SIGKILL')
+    await until('a second start', () => starts()[1])
+    await Bun.sleep(4000)
+    expect(resumes()).toEqual([])
+    expect(tg.sent(/^send/).some(c => /stopped unexpectedly/.test(String(c.body.text)))).toBe(false)
+  }, 30_000)
+
+  test('a session whose plugin cannot carry on: the user is told to nudge it', async () => {
+    writeFileSync(join(claudeDir, 'fake-no-resume'), '')
+    await killMidTurn()
+    await tg.waitFor(said(/too old to carry on by itself/), 'unsupported notice', 20_000)
+    expect(resumes()).toEqual([])
+  }, 40_000)
+})

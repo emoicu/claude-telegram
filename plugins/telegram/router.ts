@@ -234,6 +234,10 @@ type Slot = {
   lastActive: number
   pinned?: boolean // never stopped for being idle (main)
   closed?: boolean // topic closed in Telegram
+  busy?: boolean // Claude was working at the last tick
+  lastChat?: string // where its last message came from (main: a direct message chat)
+  interrupted?: number // when it died mid-turn; it is asked to carry on once it connects
+  carriedOnAt?: number // when it was last asked to carry on
 }
 
 type Runtime = {
@@ -245,6 +249,7 @@ type Runtime = {
   version?: string // Claude Code version the session runs
   updateTo?: string // stopped to pick up this update (e.g. "Claude Code 2.1.330")
   plugin?: string // plugin version its server.ts runs, from its hello
+  can?: string[] // what its server.ts understands beyond updates, from its hello
   rssMB?: number
   quickExits: number
   gaveUp?: boolean
@@ -622,6 +627,8 @@ function loadQueue(): void {
 function deliver(slot: Slot, update: unknown): void {
   const r = runtime(slot.name)
   slot.lastActive = Date.now()
+  const chat = (update as { message?: { chat?: { id?: number } } }).message?.chat?.id
+  if (chat != null) slot.lastChat = String(chat)
   dirty = true
   if (r.sock) send(r.sock, { update })
   else {
@@ -630,7 +637,58 @@ function deliver(slot: Slot, update: unknown): void {
   }
 }
 
-async function onHello(sock: Socket<SockData>, name: string, plugin?: string): Promise<void> {
+/** Claude may be idle or asleep for a while: a turn cut off this soon again is not resumed. */
+const CARRY_ON_AGAIN_MS = 10 * 60_000
+
+/**
+ * A session that died while Claude was working (killed, crashed, the host
+ * restarted): remember it, so that once it is back Claude is asked to carry
+ * on. Claude Code itself marks such a turn as interrupted and waits.
+ */
+async function markInterrupted(slot: Slot, why: string): Promise<void> {
+  slot.busy = undefined
+  dirty = true
+  if (slot.carriedOnAt && Date.now() - slot.carriedOnAt < CARRY_ON_AGAIN_MS) {
+    log(`${slot.name}: ${why} mid-turn again soon after carrying on, not carrying on again`)
+    slot.interrupted = undefined
+    await notify(slot, t('routerInterruptedAgain'))
+    return
+  }
+  log(`${slot.name}: ${why} mid-turn, will ask it to carry on`)
+  slot.interrupted = Date.now()
+  await notify(slot, t('routerInterrupted'))
+}
+
+/** Ask a session that came back after an interrupted turn to carry on. */
+async function carryOn(slot: Slot, r: Runtime, sock: Socket<SockData>): Promise<void> {
+  const at = slot.interrupted!
+  slot.interrupted = undefined
+  dirty = true
+  const chat_id = slot.chat ?? slot.lastChat ?? loadAccess().allowFrom[0]
+  if (!r.can?.includes('resume') || !chat_id) {
+    log(`${slot.name}: cannot ask it to carry on (plugin ${r.plugin})`)
+    await notify(slot, t('routerResumeUnsupported'))
+    return
+  }
+  slot.carriedOnAt = Date.now()
+  const id = `resume-${slot.name}-${at}`
+  send(sock, {
+    resume: {
+      chat_id,
+      id,
+      text:
+        `[${id}] Message from the Telegram router, not from the user: your previous turn was cut off at ${new Date(at).toISOString()} ` +
+        'because the Claude Code process ended unexpectedly, and this conversation was resumed. Nobody asked you to stop. ' +
+        'Work out where the task stood: what was done, and whether the last command finished. Do not blindly run again a command ' +
+        'that may have caused the interruption. Then carry on with the task and keep the user posted with the reply tool. ' +
+        'If no task was in progress, do nothing.',
+    },
+  })
+  log(`${slot.name}: asked it to carry on the turn cut off at ${new Date(at).toISOString()}`)
+  await notify(slot, t('routerContinuing'))
+}
+
+async function onHello(sock: Socket<SockData>, name: string, plugin?: string, can?: string[]): Promise<void> {
   const slot = slots.get(name)
   if (!slot) {
     log(`hello from unknown slot ${name}`)
@@ -641,6 +699,7 @@ async function onHello(sock: Socket<SockData>, name: string, plugin?: string): P
   r.sock = sock
   // Servers older than this check send no version: treat them as outdated.
   r.plugin = plugin ?? 'older'
+  r.can = can
   r.dialogDone = true
   log(`${name}: session connected (${r.queue.length} queued)`)
   r.connected = true
@@ -656,6 +715,7 @@ async function onHello(sock: Socket<SockData>, name: string, plugin?: string): P
     if (message) await api('editMessageText', { chat_id: chat, message_id: message, text }).catch(() => post(chat, thread, text))
     else await post(chat, thread, text)
   }
+  if (slot.interrupted) await carryOn(slot, r, sock)
   if (r.startNotice) {
     const { chat, id } = r.startNotice
     r.startNotice = undefined
@@ -682,7 +742,9 @@ Bun.listen<SockData>({
         if (!line.trim()) continue
         try {
           const msg = JSON.parse(line)
-          if (typeof msg.hello === 'string') void onHello(sock, msg.hello, typeof msg.plugin === 'string' ? msg.plugin : undefined)
+          if (typeof msg.hello === 'string') {
+            void onHello(sock, msg.hello, typeof msg.plugin === 'string' ? msg.plugin : undefined, Array.isArray(msg.can) ? msg.can : undefined)
+          }
         } catch (err) {
           logger.warn('unreadable line from a session', err)
         }
@@ -1029,6 +1091,11 @@ async function tick(): Promise<void> {
         if (slot.name === 'main') writeFileSync(join(STATE_DIR, 'last-session'), `${info.sessionId}\n`)
       }
       r.status = info?.status
+      const busy = !!r.status && r.status !== 'idle'
+      if (busy !== !!slot.busy) {
+        slot.busy = busy || undefined
+        dirty = true
+      }
       r.version = (info as { version?: string } | undefined)?.version ?? r.version
       if (r.status && r.status !== 'idle') slot.lastActive = Date.now()
       confirmDialog(slot, r)
@@ -1048,6 +1115,7 @@ async function tick(): Promise<void> {
       r.status = undefined
       if (planned) {
         log(`${slot.name}: stopped`)
+        slot.busy = undefined
         r.quickExits = 0
         if (r.updateTo && slot.pinned) {
           void notify(slot, t('routerUpdating', { version: r.updateTo }))
@@ -1056,6 +1124,7 @@ async function tick(): Promise<void> {
       } else {
         r.quickExits = ran < QUICK_EXIT_MS ? r.quickExits + 1 : 0
         log(`${slot.name}: exited after ${Math.round(ran / 1000)}s (quick exits in a row: ${r.quickExits})`)
+        if (slot.busy) await markInterrupted(slot, 'exited unexpectedly')
         if (r.quickExits >= MAX_QUICK_EXITS) {
           if (slot.sessionId && r.quickExits === MAX_QUICK_EXITS) {
             log(`${slot.name}: giving up on resuming ${slot.sessionId}, next start is a new session`)
@@ -1063,6 +1132,7 @@ async function tick(): Promise<void> {
             dirty = true
           } else {
             r.gaveUp = true
+            slot.interrupted = undefined
             await notify(slot, t('routerCrashLoop'))
           }
         }
@@ -1082,8 +1152,8 @@ async function tick(): Promise<void> {
     // died before connecting: forget the request.
     if (r.restart) r.restart = undefined
     if (r.gaveUp) continue
-    // Restart main always, and any slot that has messages waiting.
-    if (slot.pinned || r.queue.length) await wake(slot)
+    // Restart main always, and any slot that has messages waiting or was cut off mid-turn.
+    if (slot.pinned || r.queue.length || slot.interrupted) await wake(slot)
   }
   checkForUpdate()
   saveSlots()
@@ -1212,6 +1282,10 @@ for (const slot of slots.values()) {
     renameWindow(slot)
     log(`${slot.name}: adopted running session pid ${pid}`)
   }
+}
+// Sessions that were working when the router (or the whole host) went down.
+for (const slot of slots.values()) {
+  if (slot.busy && !alive(runtime(slot.name).pid)) await markInterrupted(slot, 'was gone after the router restarted')
 }
 dirty = true
 saveSlots()

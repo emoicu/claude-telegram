@@ -3,7 +3,8 @@
 // session file the router reads (status from $CLAUDE_CONFIG_DIR/fake-status),
 // keeps a transcript file so --resume counts as valid, says hello on the
 // router socket like server.ts and logs every start to starts.log. With a
-// fake-crash file it exits right after starting.
+// fake-crash file it exits right after starting. Lines from the router go to
+// received.log.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -37,9 +38,13 @@ await Bun.connect({
   unix: process.env.TELEGRAM_ROUTER_SOCKET!,
   socket: {
     open(sock) {
-      sock.write(`${JSON.stringify({ hello: process.env.TELEGRAM_SLOT, plugin: '9.9.9' })}\n`)
+      // An older plugin (fake-no-resume) does not say what it can do.
+      const can = existsSync(join(dir, 'fake-no-resume')) ? {} : { can: ['resume'] }
+      sock.write(`${JSON.stringify({ hello: process.env.TELEGRAM_SLOT, plugin: '9.9.9', ...can })}\n`)
     },
-    data() {},
+    data(_sock, chunk) {
+      appendFileSync(join(dir, 'received.log'), chunk.toString())
+    },
   },
 })
 

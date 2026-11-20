@@ -1678,14 +1678,21 @@ const SERVER_STARTED_AT = Date.now()
 const DELIVERY_WINDOW_MS = 90_000
 const DELIVERY_CHECK_MS = Number(process.env.TELEGRAM_DELIVERY_CHECK_MS ?? 10_000)
 
-function deliverInbound(notification: { method: string; params: { content: string; meta: Record<string, string> } }, chat_id: string, msgId: number | undefined): void {
+function deliverInbound(
+  notification: { method: string; params: { content: string; meta: Record<string, string> } },
+  chat_id: string,
+  msgId: number | undefined,
+  // Text that shows the message reached the transcript, for one with no message id.
+  token?: string,
+): void {
   const send = () =>
     mcp.notification(notification).catch(err => {
       log.warn('failed to deliver inbound to Claude', err)
     })
   void send()
-  log.info(`handed message ${msgId ?? '?'} in ${chat_id} to Claude`)
-  if (msgId == null || !inStartupWindow(SERVER_STARTED_AT, Date.now(), DELIVERY_WINDOW_MS)) return
+  log.info(`handed message ${msgId ?? token ?? '?'} in ${chat_id} to Claude`)
+  const marker = msgId != null ? channelMarker(chat_id, msgId) : token
+  if (!marker || !inStartupWindow(SERVER_STARTED_AT, Date.now(), DELIVERY_WINDOW_MS)) return
   setTimeout(() => {
     const sid = readClaudeSession()?.sessionId
     const path = sid ? findTranscript(sid) : undefined
@@ -1697,8 +1704,8 @@ function deliverInbound(notification: { method: string; params: { content: strin
       ignored('read the transcript to check a delivery', err)
       return
     }
-    if (tail.includes(channelMarker(chat_id, msgId))) return
-    log.warn(`message ${msgId} in ${chat_id} is not in Claude's transcript ${DELIVERY_CHECK_MS / 1000}s after handing it over; handing it over again`)
+    if (tail.includes(marker)) return
+    log.warn(`message ${msgId ?? token} in ${chat_id} is not in Claude's transcript ${DELIVERY_CHECK_MS / 1000}s after handing it over; handing it over again`)
     void send()
   }, DELIVERY_CHECK_MS)
 }
@@ -2209,7 +2216,8 @@ function connectRouter(): void {
     unix: ROUTER_SOCKET!,
     socket: {
       open(sock) {
-        sock.write(`${JSON.stringify({ hello: SLOT, pid: process.pid, plugin: pluginVersion() })}\n`)
+        // can: what this server understands beyond updates (router.ts checks).
+        sock.write(`${JSON.stringify({ hello: SLOT, pid: process.pid, plugin: pluginVersion(), can: ['resume'] })}\n`)
         log.info(`connected to router as ${SLOT}`)
       },
       data(_sock, chunk) {
@@ -2224,6 +2232,18 @@ function connectRouter(): void {
               void bot.handleUpdate(msg.update).catch(err => {
                 log.warn('routed update failed', err)
               })
+            } else if (msg.resume && typeof msg.resume.text === 'string' && typeof msg.resume.chat_id === 'string') {
+              // The router's request to carry on after an interrupted turn.
+              const { chat_id, text, id } = msg.resume as { chat_id: string; text: string; id?: string }
+              deliverInbound(
+                {
+                  method: 'notifications/claude/channel',
+                  params: { content: text, meta: { chat_id, user: 'telegram-router', user_id: 'router', ts: new Date().toISOString() } },
+                },
+                chat_id,
+                undefined,
+                id,
+              )
             }
           } catch (err) {
             log.warn('unreadable line from the router', err)

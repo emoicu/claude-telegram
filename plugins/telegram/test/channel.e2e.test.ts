@@ -493,3 +493,28 @@ describe('delivery check', () => {
     expect(count('unknown')).toBe(1)
   })
 })
+
+describe('router messages', () => {
+  test('says it can carry on, and hands the router\'s carry-on request to Claude', async () => {
+    const path = join(tmpdir(), `fake-router-${process.pid}.sock`)
+    let hello: any
+    const listener = Bun.listen({
+      unix: path,
+      socket: {
+        data(sock, chunk) {
+          hello = JSON.parse(chunk.toString().split('\n')[0]!)
+          sock.write(`${JSON.stringify({ resume: { chat_id: String(OWNER), id: 'resume-main-1', text: '[resume-main-1] carry on' } })}\n`)
+        },
+      },
+    })
+    try {
+      await boot(allowlist, { TELEGRAM_ROUTER_SOCKET: path })
+      const n = await ch.waitNotification('notifications/claude/channel', p => p.content === '[resume-main-1] carry on')
+      expect(hello.can).toContain('resume')
+      expect(n.meta.chat_id).toBe(String(OWNER))
+      expect(n.meta.user).toBe('telegram-router')
+    } finally {
+      listener.stop(true)
+    }
+  })
+})

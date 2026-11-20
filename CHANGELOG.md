@@ -2,7 +2,11 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
-## [1.6.2] - 2026-11-20
+## [1.7.0] - 2026-11-20
+
+### Added
+
+- Carrying on after an interrupted turn (router mode): when a session dies while Claude is working (killed, crashed, or the host restarted), the router says so in the chat, brings the session back, and once it connects asks Claude to work out where the task stood and carry on, then tells the chat it is doing so. Claude is told not to blindly rerun a command that may have caused the interruption. Only once: a session cut off again within 10 minutes of carrying on does not carry on by itself, and the chat is told to send a message instead. Sessions that were idle, or that were stopped on purpose (`/restart`, idle stop, updates), are not asked to carry on. Sessions say what they understand in their hello (`can: ["resume"]`); for an older plugin the chat is asked to nudge Claude.
 
 ### Fixed
 
@@ -162,7 +166,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
-[1.6.2]: https://github.com/emoicu/claude-telegram/releases/tag/v1.6.2
+[1.7.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.7.0
 [1.6.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.6.1
 [1.6.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.6.0
 [1.5.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.5.1

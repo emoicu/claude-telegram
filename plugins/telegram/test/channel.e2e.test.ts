@@ -102,6 +102,17 @@ describe('tools', () => {
     expect(tg.sent('sendDocument')).toHaveLength(0)
   })
 
+  test('reply sends photos and documents as one album each', async () => {
+    await boot(allowlist)
+    const dir = join(tmpdir(), `tg-album-${Date.now()}`)
+    mkdirSync(dir, { recursive: true })
+    const files = ['a.png', 'b.jpg', 'c.txt', 'd.pdf'].map(n => join(dir, n))
+    for (const f of files) writeFileSync(f, 'x')
+    expect(await ch.tool('reply', { chat_id: String(OWNER), text: 'files', files })).toMatch(/sent/)
+    const albums = tg.sent('sendMediaGroup').map(c => JSON.parse(c.body.media).map((m: { type: string }) => m.type))
+    expect(albums).toEqual([['photo', 'photo'], ['document', 'document']])
+  })
+
   test('schedule queues a message, scheduled lists and cancels it', async () => {
     await boot(allowlist)
     const out = await ch.tool('schedule', { chat_id: String(OWNER), text: 'drink water', at: 'now+1h' })

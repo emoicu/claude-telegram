@@ -2,6 +2,14 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.3.1] - 2026-11-20
+
+### Changed
+
+- Dependencies: `@modelcontextprotocol/sdk` 1.32.0 → 1.32.2, `grammy` 1.41.1 → 1.46.0, `zod` 4.6.6 → 4.6.7. TypeScript stays on 5.x for now.
+- CI uses `actions/checkout@v7`.
+- Photo and document albums are built with their own types, which grammy 1.46 requires; an end-to-end test covers them.
+
 ## [1.3.0] - 2026-11-19
 
 ### Added
@@ -76,6 +84,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.3.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.3.1
 [1.3.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.3.0
 [1.2.2]: https://github.com/emoicu/claude-telegram/releases/tag/v1.2.2
 [1.2.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.2.1

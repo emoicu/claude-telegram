@@ -141,6 +141,15 @@ export class FakeTelegram {
           from: BOT,
           text: body.text ?? body.rich_message?.markdown ?? '',
         }
+      case 'sendMediaGroup': {
+        const media = typeof body.media === 'string' ? JSON.parse(body.media) : (body.media ?? [])
+        return media.map(() => ({
+          message_id: this.nextMessage++,
+          date: Math.floor(Date.now() / 1000),
+          chat: { id: Number(body.chat_id), type: 'private' },
+          from: BOT,
+        }))
+      }
       default:
         return true
     }

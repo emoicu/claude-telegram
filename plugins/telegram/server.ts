@@ -719,7 +719,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
               sentIds.push(sent.message_id)
               continue
             }
-            const sent = await bot.api.sendMediaGroup(chat_id, batch.map(f => ({ type: kind, media: new InputFile(f) })), opts)
+            // One media type per album: grammy types photo and document albums separately.
+            const media = kind === 'photo'
+              ? batch.map(f => ({ type: 'photo' as const, media: new InputFile(f) }))
+              : batch.map(f => ({ type: 'document' as const, media: new InputFile(f) }))
+            const sent = await bot.api.sendMediaGroup(chat_id, media, opts)
             sentIds.push(...sent.map(m => m.message_id))
           }
         }

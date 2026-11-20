@@ -132,6 +132,26 @@ export function dmCommandGate(ctx: Context): { access: Access; senderId: string 
   return { access, senderId }
 }
 
+/**
+ * Who may press the bot's own buttons (Stop, quick replies) in this chat: in
+ * a private chat a user in allowFrom; in an allowlisted group anyone the
+ * inbound gate lets talk there (the group's allowFrom, or every member when
+ * it has none) and anyone in the global allowFrom.
+ */
+export function buttonGate(ctx: Context): { access: Access; senderId: string } | null {
+  if (!ctx.from || !ctx.chat) return null
+  const access = loadAccess()
+  if (access.dmPolicy === 'disabled') return null
+  const senderId = String(ctx.from.id)
+  if (ctx.chat.type === 'private') return access.allowFrom.includes(senderId) ? { access, senderId } : null
+  if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') return null
+  const policy = access.groups[String(ctx.chat.id)]
+  if (!policy) return null
+  const groupAllow = policy.allowFrom ?? []
+  const allowed = access.allowFrom.includes(senderId) || groupAllow.length === 0 || groupAllow.includes(senderId)
+  return allowed ? { access, senderId } : null
+}
+
 // The /telegram:access skill drops a file at approved/<senderId> when it pairs
 // someone. Poll for it, send confirmation, clean up. For Telegram DMs,
 // chatId == senderId, so we can send directly without stashing chatId.

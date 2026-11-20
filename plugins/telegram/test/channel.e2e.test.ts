@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { Channel, FakeTelegram } from './harness'
 
 const OWNER = 1111
 const STRANGER = 2222
+/** In the group below only, by its own allowFrom. */
+const MEMBER = 3333
+const GROUP = -100777
 
 let tg: FakeTelegram
 let ch: Channel
@@ -29,6 +32,18 @@ const allowlist = { dmPolicy: 'allowlist', allowFrom: [String(OWNER)], groups: {
 const said = (c: { method: string; body: any }, re: RegExp) =>
   (c.method === 'sendMessage' || c.method === 'sendRichMessage') && re.test(c.body.text ?? c.body.rich_message?.markdown ?? '')
 const textOf = (c: { body: any }): string => c.body.text ?? c.body.rich_message?.markdown ?? ''
+
+let routerCount = 0
+/** Stands in for router.ts: a socket the server connects to, and that connection. */
+function fakeRouter() {
+  const path = join(tmpdir(), `tg-e2e-router-${process.pid}-${routerCount++}.sock`)
+  let connected!: (sock: { write(data: string | Uint8Array): number }) => void
+  const socket = new Promise<{ write(data: string | Uint8Array): number }>(resolve => {
+    connected = resolve
+  })
+  const listener = Bun.listen({ unix: path, socket: { open: sock => connected(sock), data() {} } })
+  return { path, socket, stop: () => listener.stop(true) }
+}
 
 describe('inbound messages', () => {
   test('a message from an allowlisted user reaches Claude with its metadata', async () => {
@@ -61,6 +76,31 @@ describe('inbound messages', () => {
   })
 })
 
+describe('photos', () => {
+  const photo = (file_id: string, file_unique_id: string) =>
+    tg.dm(OWNER, '', { text: undefined, caption: 'look', photo: [{ file_id, file_unique_id, width: 10, height: 10 }] })
+
+  test('a photo that cannot be downloaded arrives without an image', async () => {
+    await boot(allowlist)
+    tg.serveFile('ph1', { file_path: 'photos/gone.jpg', file_unique_id: 'U1' })
+    photo('ph1', 'U1')
+    const n = await ch.waitNotification('notifications/claude/channel', p => p.content === 'look')
+    expect(n.meta.image_path).toBeUndefined()
+    const inbox = join(ch.stateDir, 'inbox')
+    expect(existsSync(inbox) ? readdirSync(inbox) : []).toEqual([])
+  })
+
+  test('a photo is saved in the inbox under a safe name', async () => {
+    await boot(allowlist)
+    tg.serveFile('ph2', { file_path: 'photos/a.jp/g', file_unique_id: '../A b', content: 'JPEGDATA' })
+    photo('ph2', '../A b')
+    const n = await ch.waitNotification('notifications/claude/channel', p => p.content === 'look')
+    expect(dirname(n.meta.image_path)).toBe(join(ch.stateDir, 'inbox'))
+    expect(basename(n.meta.image_path)).toMatch(/^\d+-Ab\.jpg$/)
+    expect(readFileSync(n.meta.image_path, 'utf8')).toBe('JPEGDATA')
+  })
+})
+
 describe('pairing confirmation', () => {
   test('an approval dropped by /telegram:access is confirmed to the user and cleaned up', async () => {
     await boot(allowlist)
@@ -72,6 +112,35 @@ describe('pairing confirmation', () => {
     for (let i = 0; i < 50 && existsSync(file); i++) await Bun.sleep(20)
     expect(existsSync(file)).toBe(false)
   }, 15_000)
+
+  test('servers that do not poll Telegram, and topic sessions, leave it alone', async () => {
+    const quiet = new Channel(tg, { access: allowlist, env: { TELEGRAM_CHANNEL_MODE: 'never' } })
+    const topic = new Channel(tg, {
+      access: allowlist,
+      env: {
+        TELEGRAM_ROUTER_SOCKET: join(tmpdir(), `no-router-${process.pid}.sock`),
+        TELEGRAM_SLOT: 'topic-7',
+        TELEGRAM_TOPIC_CHAT: '-100555',
+        TELEGRAM_TOPIC_THREAD: '7',
+      },
+    })
+    try {
+      await quiet.handshake()
+      await topic.start(tg)
+      const files = [quiet, topic].map(c => {
+        mkdirSync(join(c.stateDir, 'approved'), { recursive: true })
+        const file = join(c.stateDir, 'approved', String(STRANGER))
+        writeFileSync(file, '')
+        return file
+      })
+      await Bun.sleep(6_500)
+      expect(tg.sent().some(c => said(c, /Paired/))).toBe(false)
+      for (const file of files) expect(existsSync(file)).toBe(true)
+    } finally {
+      await quiet.stop()
+      await topic.stop()
+    }
+  }, 20_000)
 })
 
 describe('tools', () => {
@@ -129,6 +198,33 @@ describe('tools', () => {
     expect(albums).toEqual([['photo', 'photo'], ['document', 'document']])
   })
 
+  test('reply with files and no text sends just the files', async () => {
+    await boot(allowlist)
+    const dir = join(tmpdir(), `tg-files-only-${Date.now()}`)
+    mkdirSync(dir, { recursive: true })
+    const f = join(dir, 'report.txt')
+    writeFileSync(f, 'x')
+    expect(await ch.tool('reply', { chat_id: String(OWNER), text: '', files: [f] })).toMatch(/sent/)
+    expect(await ch.tool('reply', { chat_id: String(OWNER), text: ' \n', files: [f], format: 'rich' })).toMatch(/sent/)
+    expect(tg.sent('sendDocument')).toHaveLength(2)
+    expect(tg.sent(/^send(Message|RichMessage)$/)).toHaveLength(0)
+    await expect(ch.tool('reply', { chat_id: String(OWNER), text: '' })).rejects.toThrow(/text or files/)
+  })
+
+  test('a rich reply that fails part way sends only the rest as plain text', async () => {
+    await boot(allowlist)
+    const a = 'a'.repeat(20_000)
+    const b = 'b'.repeat(20_000)
+    tg.failNext('sendRichMessage', null, { error_code: 400, description: 'Bad Request: rich message rejected' })
+    expect(await ch.tool('reply', { chat_id: String(OWNER), text: `${a}\n\n${b}`, format: 'rich' })).toMatch(/sent/)
+    const rich = tg.sent('sendRichMessage')
+    expect(rich).toHaveLength(2)
+    expect(textOf(rich[0]!)).toBe(a)
+    const plain = tg.sent('sendMessage').map(textOf)
+    expect(plain.length).toBeGreaterThan(1)
+    expect(plain.join('')).toBe(b)
+  })
+
   test('schedule queues a message, scheduled lists and cancels it', async () => {
     await boot(allowlist)
     const out = await ch.tool('schedule', { chat_id: String(OWNER), text: 'drink water', at: 'now+1h' })
@@ -175,6 +271,91 @@ describe('permission relay', () => {
     tg.dm(OWNER, 'yes fghij')
     expect(await ch.waitNotification('notifications/claude/channel/permission')).toEqual({ request_id: 'fghij', behavior: 'allow' })
     expect(ch.notifications.some(n => n.method === 'notifications/claude/channel')).toBe(false)
+  })
+
+  test('a "yes <code>" from a group member outside allowFrom is only a message', async () => {
+    await boot({ ...allowlist, groups: { [String(GROUP)]: { requireMention: false, allowFrom: [String(MEMBER)] } } })
+    request('fghij')
+    tg.group(GROUP, MEMBER, 'yes fghij')
+    const n = await ch.waitNotification('notifications/claude/channel', p => p.content === 'yes fghij')
+    expect(n.meta.chat_id).toBe(String(GROUP))
+    expect(ch.notifications.some(x => x.method === 'notifications/claude/channel/permission')).toBe(false)
+  })
+})
+
+describe('questions (AskUserQuestion)', () => {
+  test('quick presses delivered at once are all kept, and the answers reach Claude once', async () => {
+    const router = fakeRouter()
+    try {
+      await boot(allowlist, { TELEGRAM_ROUTER_SOCKET: router.path })
+      const sock = await router.socket
+      const id = 'abcdef01'
+      const question = (q: string, options: string[], msg: number) =>
+        ({ header: '', question: q, multiSelect: false, options, selected: [], done: false, messages: { [String(OWNER)]: msg }, text: `❓ ${q}` })
+      mkdirSync(join(ch.stateDir, 'ask'), { recursive: true })
+      const file = join(ch.stateDir, 'ask', `${id}.json`)
+      writeFileSync(file, JSON.stringify({ id, created: Date.now(), delivered: false, questions: [question('Color?', ['Red', 'Blue'], 7001), question('Size?', ['S', 'M'], 7002)] }))
+      // The router hands updates over as they come; the server runs them side by side.
+      const presses = [tg.pressUpdate(OWNER, `ask:${id}:0:1`, 7001), tg.pressUpdate(OWNER, `ask:${id}:1:0`, 7002), tg.pressUpdate(OWNER, `ask:${id}:1:1`, 7002)]
+      sock.write(presses.map(update => `${JSON.stringify({ update })}\n`).join(''))
+      const n = await ch.waitNotification('notifications/claude/channel', p => /Answers to your questions/.test(p.content))
+      expect(n.content).toContain('1. Color?\n   → Blue')
+      expect(n.content).toContain('2. Size?\n   → S')
+      await Bun.sleep(500)
+      expect(ch.notifications.filter(x => /Answers to your questions/.test(x.params?.content ?? ''))).toHaveLength(1)
+      const rec = JSON.parse(readFileSync(file, 'utf8'))
+      expect(rec.delivered).toBe(true)
+      expect(rec.questions.map((q: { selected: number[] }) => q.selected)).toEqual([[1], [0]])
+      expect(tg.sent('answerCallbackQuery').map(c => c.body.text).sort()).toEqual(['Already answered.', 'Selected: Blue', 'Selected: S'])
+    } finally {
+      router.stop()
+    }
+  })
+})
+
+describe('buttons in a group', () => {
+  const group = { ...allowlist, groups: { [String(GROUP)]: { requireMention: true, allowFrom: [String(MEMBER)] } } }
+  const answers = () => tg.sent('answerCallbackQuery').map(c => c.body.text)
+  const pressAndWait = async (user: number, data: string, messageId: number) => {
+    const before = answers().length
+    tg.press(user, data, messageId, '', GROUP)
+    await tg.waitFor(() => answers().length > before, 'answer')
+    return answers()[before]
+  }
+
+  test('Stop works for the group\'s members and the owner, not for others', async () => {
+    await boot(group)
+    expect(await pressAndWait(MEMBER, 'stop:run', 1)).toBe('Claude is not working on anything right now.')
+    expect(await pressAndWait(OWNER, 'stop:run', 1)).toBe('Claude is not working on anything right now.')
+    expect(await pressAndWait(STRANGER, 'stop:run', 1)).toBe('Not authorized.')
+  })
+
+  test('a quick button pressed by a member reaches Claude', async () => {
+    await boot(group)
+    await ch.tool('reply', { chat_id: String(GROUP), text: 'Ready to ship?' })
+    const id = (await tg.waitFor(c => c.method === 'sendMessage' && c.body.text === 'Ready to ship?', 'reply')).result.message_id
+    expect(await pressAndWait(STRANGER, `qr:${id}:0`, id)).toBe('Not authorized.')
+    tg.press(MEMBER, `qr:${id}:0`, id, '', GROUP)
+    const n = await ch.waitNotification('notifications/claude/channel', p => /\[Button .* on your message/.test(p.content))
+    expect(n.meta.chat_id).toBe(String(GROUP))
+    expect(n.meta.user_id).toBe(String(MEMBER))
+  })
+})
+
+describe('reaction status', () => {
+  const OTHER = 4444
+  test('a reply settles the 👀 in its own chat and leaves other chats waiting', async () => {
+    await boot({ ...allowlist, allowFrom: [String(OWNER), String(OTHER)] }, { TELEGRAM_STATUS: 'on' })
+    const reactions = (id: number) => tg.sent('setMessageReaction').filter(c => c.body.message_id === id).map(c => c.body.reaction?.[0]?.emoji)
+    const first = tg.dm(OWNER, 'one')
+    await ch.waitNotification('notifications/claude/channel', p => p.content === 'one')
+    const second = tg.dm(OTHER, 'two')
+    await ch.waitNotification('notifications/claude/channel', p => p.content === 'two')
+    await ch.tool('reply', { chat_id: String(OWNER), text: 'done with one' })
+    await tg.waitFor(c => c.method === 'setMessageReaction' && c.body.message_id === first && c.body.reaction?.[0]?.emoji === '👍', '👍 on the first')
+    expect(reactions(second)).toEqual(['👀'])
+    await ch.tool('reply', { chat_id: String(OTHER), text: 'done with two' })
+    await tg.waitFor(c => c.method === 'setMessageReaction' && c.body.message_id === second && c.body.reaction?.[0]?.emoji === '👍', '👍 on the second')
   })
 })
 
@@ -515,6 +696,33 @@ describe('router messages', () => {
       expect(n.meta.user).toBe('telegram-router')
     } finally {
       listener.stop(true)
+    }
+  })
+
+  test('a character split between two reads from the socket arrives whole', async () => {
+    const router = fakeRouter()
+    try {
+      await boot(allowlist, { TELEGRAM_ROUTER_SOCKET: router.path })
+      const sock = await router.socket
+      const update = {
+        update_id: 1,
+        message: {
+          message_id: 42,
+          date: Math.floor(Date.now() / 1000),
+          chat: { id: OWNER, type: 'private' },
+          from: { id: OWNER, is_bot: false, first_name: 'Owner' },
+          text: '你好 router',
+        },
+      }
+      const bytes = new TextEncoder().encode(`${JSON.stringify({ update })}\n`)
+      const cut = bytes.indexOf(0xe4) + 1 // inside 你
+      sock.write(bytes.subarray(0, cut))
+      await Bun.sleep(150)
+      sock.write(bytes.subarray(cut))
+      const n = await ch.waitNotification('notifications/claude/channel', p => /router/.test(p.content))
+      expect(n.content).toBe('你好 router')
+    } finally {
+      router.stop()
     }
   })
 })

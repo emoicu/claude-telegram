@@ -21,7 +21,7 @@ const SESSION = 'e2e'
 function env(): Record<string, string> {
   return {
     PATH: process.env.PATH ?? '',
-    LANG: 'C.UTF-8', // without it tmux escapes the tabs in its -F output
+    // No LANG on purpose: the router must read tmux output without a UTF-8 locale.
     HOME: dir,
     TMUX_TMPDIR: dir,
     CLAUDE_CONFIG_DIR: claudeDir,

@@ -130,7 +130,9 @@ function ignored(what: string, err: unknown): void {
 }
 
 function tmux(...args: string[]): string {
-  return execFileSync('tmux', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  // -u: without a UTF-8 locale (LANG unset, as under some service managers)
+  // tmux prints the tabs of our -F formats as "_" and we could not read them.
+  return execFileSync('tmux', ['-u', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))

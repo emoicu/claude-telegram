@@ -9,6 +9,10 @@ All notable changes to this plugin. The format follows [Keep a Changelog](https:
 - `/restart` (router mode) restarts the session of the chat or topic it is sent in and resumes its conversation, e.g. to load a plugin update right away or to unstick a session. An idle session restarts at once; while Claude is replying, buttons offer to wait for the reply to finish or to stop it now. The status message is edited to say when the session is back and which plugin version it runs. A session that ignores SIGTERM is killed after 15 seconds. Only allowlisted users can use it.
 - End-to-end tests for the router (`test/router.e2e.test.ts`): a fake Bot API, a private tmux server and a stand-in for Claude Code. Skipped where tmux is not installed.
 
+### Fixed
+
+- The router reads tmux's output without a UTF-8 locale too. With `LANG` unset tmux printed the tabs of its format strings as `_`, so the router could not find the process of a session window. It now runs tmux with `-u`.
+
 ## [1.4.3] - 2026-11-20
 
 ### Changed

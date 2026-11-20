@@ -236,24 +236,72 @@ async function jobSlash(pane: string, cmd: string): Promise<void> {
 
 // ---- entry -----------------------------------------------------------------
 
-function acquireLock(): boolean {
+/** Whether process `pid` still runs (EPERM: it does, as another user). */
+function alive(pid: number): boolean {
   try {
-    const st = statSync(LOCK)
-    if (Date.now() - st.mtimeMs < 15 * 60_000) return false // another job is running
-    rmSync(LOCK) // stale lock from a crashed job
-  } catch {}
-  try {
-    const fd = openSync(LOCK, 'wx') // atomic: fails if another job just took it
-    writeFileSync(fd, String(process.pid))
-    closeSync(fd)
+    process.kill(pid, 0)
     return true
-  } catch {
-    return false
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
   }
 }
 
+/** The pid in a lock file, undefined when there is none or it is not written yet. */
+function lockPid(file: string): number | undefined {
+  try {
+    const pid = Number(readFileSync(file, 'utf8').trim())
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Take the job lock: a file holding the pid of the job that has it. A lock
+ * is stale only when that process is gone, however long its job takes (it
+ * may wait for the session for 10 minutes, twice for /usage). A lock with
+ * no pid yet is being taken right now, unless it is old.
+ */
+export function acquireLock(file: string): boolean {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(file, 'wx') // atomic: fails if another job has it
+      writeFileSync(fd, String(process.pid))
+      closeSync(fd)
+      return true
+    } catch {}
+    const pid = lockPid(file)
+    if (pid === process.pid || (pid !== undefined && alive(pid))) return false
+    try {
+      if (pid === undefined && Date.now() - statSync(file).mtimeMs < 60_000) return false
+      // Stale: remove it, unless another job replaced it meanwhile.
+      if (lockPid(file) === pid) rmSync(file)
+    } catch {
+      // Gone already: try again.
+    }
+  }
+  return false
+}
+
+/** Release the lock, only if this process holds it. */
+export function releaseLock(file: string): void {
+  try {
+    if (lockPid(file) === process.pid) rmSync(file)
+  } catch {}
+}
+
+/** How long a job waits for the one before it before giving up. */
+const LOCK_WAIT_MS = 30 * 60_000
+
 async function runJob(command: string, arg: string): Promise<void> {
-  for (let i = 0; i < 900 && !acquireLock(); i++) await sleep(1000)
+  let held = acquireLock(LOCK)
+  for (const end = Date.now() + LOCK_WAIT_MS; !held && Date.now() < end; held = acquireLock(LOCK)) await sleep(1000)
+  if (!held) {
+    // Never run beside another job, nor touch its lock.
+    log(`job ${command}: another job kept the lock, giving up`)
+    await send(t('helperBusy', { command }))
+    return
+  }
   try {
     if (!(await waitIdle())) {
       await send(t('helperBusy', { command }))
@@ -271,9 +319,7 @@ async function runJob(command: string, arg: string): Promise<void> {
     log(`job ${command} failed: ${err}`)
     await send(t('helperError', { command, error: err instanceof Error ? err.message.split('\n')[0] : t('helperUnknownError') }))
   } finally {
-    try {
-      rmSync(LOCK)
-    } catch {}
+    releaseLock(LOCK)
   }
 }
 
@@ -310,4 +356,5 @@ async function main(): Promise<void> {
   await runJob(command, arg)
 }
 
-void main()
+// Imported by tests for the lock; run as a script otherwise.
+if (import.meta.main) void main()

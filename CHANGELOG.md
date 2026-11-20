@@ -2,6 +2,12 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) from 1.0.0 on.
 
+## [1.4.1] - 2026-11-20
+
+### Fixed
+
+- The router restarts a session whose process has exited but is still a zombie (not yet collected by tmux). It used to take the zombie for a running session and wait for it forever, so direct messages went unanswered until the router was restarted. On Linux the process state in `/proc/<pid>/stat` is now checked too (`lib/proc.ts`).
+
 ## [1.4.0] - 2026-11-20
 
 ### Added
@@ -96,6 +102,7 @@ Development versions on top of the upstream plugin v0.0.7.
 - The multi-session router: one Claude Code session per forum topic, started on demand, resumed, stopped when idle, restarted after updates.
 - Inbox pruning, Bot API timeouts, update pickup in running sessions, unit tests.
 
+[1.4.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.1
 [1.4.0]: https://github.com/emoicu/claude-telegram/releases/tag/v1.4.0
 [1.3.2]: https://github.com/emoicu/claude-telegram/releases/tag/v1.3.2
 [1.3.1]: https://github.com/emoicu/claude-telegram/releases/tag/v1.3.1

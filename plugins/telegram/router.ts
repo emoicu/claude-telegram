@@ -42,6 +42,7 @@ import { type Key, translator } from './lib/i18n.ts'
 import { retryDelayMs } from './lib/retry.ts'
 import { deliverDue, scheduleDir, scheduledSender } from './lib/schedule.ts'
 import { pollFileSlot } from './lib/polls.ts'
+import { isAlive } from './lib/proc.ts'
 import { isNewer } from './lib/version.ts'
 
 // ---- config ---------------------------------------------------------------
@@ -328,15 +329,9 @@ const validSession = (sid?: string): sid is string =>
 
 // ---- processes and resources ----------------------------------------------
 
-const alive = (pid?: number) => {
-  if (!pid) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
+// A zombie (exited, not yet collected by tmux) counts as gone, so the session
+// is restarted instead of waited for (lib/proc.ts).
+const alive = (pid?: number) => isAlive(pid)
 
 function sessionFile(pid: number): { sessionId?: string; status?: string } | undefined {
   try {
